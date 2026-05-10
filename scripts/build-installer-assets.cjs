@@ -31,33 +31,25 @@ function svgSidebar() {
   return Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIDEBAR_W}" height="${SIDEBAR_H}" viewBox="0 0 ${SIDEBAR_W} ${SIDEBAR_H}">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0c1020"/>
-      <stop offset="58%" stop-color="#0a0d18"/>
-      <stop offset="100%" stop-color="#070812"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#101828"/>
+      <stop offset="58%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0B1120"/>
     </linearGradient>
-    <radialGradient id="glowA" cx="30%" cy="18%" r="78%">
-      <stop offset="0%" stop-color="rgba(110,168,255,0.30)"/>
-      <stop offset="62%" stop-color="rgba(110,168,255,0.10)"/>
-      <stop offset="100%" stop-color="rgba(110,168,255,0)"/>
-    </radialGradient>
-    <radialGradient id="glowB" cx="85%" cy="30%" r="70%">
-      <stop offset="0%" stop-color="rgba(168,210,255,0.18)"/>
-      <stop offset="75%" stop-color="rgba(168,210,255,0.06)"/>
-      <stop offset="100%" stop-color="rgba(168,210,255,0)"/>
-    </radialGradient>
   </defs>
-  <rect width="100%" height="100%" fill="url(#g)"/>
-  <rect width="100%" height="100%" fill="url(#glowA)"/>
-  <rect width="100%" height="100%" fill="url(#glowB)"/>
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+  <rect x="0" y="0" width="6" height="${SIDEBAR_H}" fill="#2563EB"/>
+  <rect x="6" y="0" width="1" height="${SIDEBAR_H}" fill="#60A5FA" opacity="0.42"/>
+  <path d="M20 132h124v1H20zM20 204h124v1H20zM20 260h124v1H20z" fill="#FFFFFF" opacity="0.12"/>
 
-  <!-- Subtle accent bar -->
-  <rect x="0" y="0" width="5" height="${SIDEBAR_H}" fill="rgba(110,168,255,0.48)"/>
-  <rect x="5" y="0" width="1" height="${SIDEBAR_H}" fill="rgba(255,255,255,0.10)"/>
-  <rect x="0" y="${SIDEBAR_H - 84}" width="${SIDEBAR_W}" height="1" fill="rgba(255,255,255,0.10)"/>
+  <rect x="23" y="28" width="118" height="86" rx="14" fill="#FFFFFF" opacity="0.08"/>
+  <rect x="38" y="43" width="88" height="56" rx="12" fill="#FFFFFF" opacity="0.10"/>
 
-  <text x="16" y="${SIDEBAR_H - 38}" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="rgba(255,255,255,0.78)">Deskoy</text>
-  <text x="16" y="${SIDEBAR_H - 20}" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="10.5" fill="rgba(255,255,255,0.46)">Privacy cover for work</text>
+  <text x="20" y="164" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700" fill="#F9FAFB">Deskoy</text>
+  <text x="20" y="188" font-family="Segoe UI, Arial, sans-serif" font-size="10.8" font-weight="600" fill="#BFDBFE">Privacy cover for work</text>
+  <text x="20" y="226" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" fill="#CBD5E1">Installing app files,</text>
+  <text x="20" y="242" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" fill="#CBD5E1">assets, and shortcuts.</text>
+  <text x="20" y="${SIDEBAR_H - 26}" font-family="Segoe UI, Arial, sans-serif" font-size="9.5" fill="#94A3B8">Setup ${process.env.npm_package_version || ''}</text>
 </svg>`,
     'utf8',
   );
@@ -68,23 +60,14 @@ function svgHeader() {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${HEADER_W}" height="${HEADER_H}" viewBox="0 0 ${HEADER_W} ${HEADER_H}">
   <defs>
     <linearGradient id="h" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#0c1020"/>
-      <stop offset="60%" stop-color="#0a0d18"/>
-      <stop offset="100%" stop-color="#070812"/>
+      <stop offset="0%" stop-color="#EFF6FF"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
     </linearGradient>
-    <radialGradient id="hg1" cx="25%" cy="50%" r="78%">
-      <stop offset="0%" stop-color="rgba(110,168,255,0.20)"/>
-      <stop offset="100%" stop-color="rgba(110,168,255,0)"/>
-    </radialGradient>
-    <radialGradient id="hg2" cx="92%" cy="35%" r="75%">
-      <stop offset="0%" stop-color="rgba(168,210,255,0.12)"/>
-      <stop offset="100%" stop-color="rgba(168,210,255,0)"/>
-    </radialGradient>
   </defs>
   <rect width="100%" height="100%" fill="url(#h)"/>
-  <rect width="100%" height="100%" fill="url(#hg1)"/>
-  <rect width="100%" height="100%" fill="url(#hg2)"/>
-  <text x="12" y="34" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="rgba(255,255,255,0.88)">Deskoy</text>
+  <rect x="0" y="${HEADER_H - 3}" width="${HEADER_W}" height="3" fill="#2563EB"/>
+  <text x="42" y="23" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#111827">Deskoy</text>
+  <text x="42" y="39" font-family="Segoe UI, Arial, sans-serif" font-size="8.5" fill="#475569">Secure setup</text>
 </svg>`,
     'utf8',
   );
@@ -119,7 +102,7 @@ async function main() {
   if (!fs.existsSync(assets)) fs.mkdirSync(assets, { recursive: true });
 
   await renderBmp(svgSidebar(), sidebarBmp, SIDEBAR_W, SIDEBAR_H, async (p) =>
-    maybeCompositeLogo(p, SIDEBAR_W, SIDEBAR_H, 92, 92),
+    maybeCompositeLogo(p, SIDEBAR_W, SIDEBAR_H, 66, 38),
   );
 
   await renderBmp(svgHeader(), headerBmp, HEADER_W, HEADER_H, async (p) =>

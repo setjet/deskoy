@@ -14,7 +14,6 @@ import { rendererConfig } from './webpack.renderer.config';
 
 const assetsIcon = path.join(__dirname, 'assets', 'icon');
 const assetsIco = path.join(__dirname, 'assets', 'icon.ico');
-const assetsPng = path.join(__dirname, 'assets', 'icon.png');
 const nsisSidebarBmp = path.join(__dirname, 'assets', 'installer-sidebar.bmp');
 const nsisHeaderBmp = path.join(__dirname, 'assets', 'installer-header.bmp');
 const deskoyWebhooksJson = path.join(__dirname, 'deskoy-webhooks.json');

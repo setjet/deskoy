@@ -23,10 +23,6 @@ declare global {
         blockedTitleKeywords: string[];
         theme: 'dark' | 'light' | 'system';
       }>;
-      getActiveWindowInfo: () => Promise<
-        | { hwnd: number; pid: number; processName: string; title: string; className: string }
-        | null
-      >;
       saveSettings: (
         settings: Partial<{
           hotkey: string;

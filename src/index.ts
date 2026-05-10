@@ -125,8 +125,14 @@ type DeskoySettings = {
   theme: 'dark' | 'light' | 'system';
 };
 
-// electron-store's exported types vary by version; keep runtime strong, typing flexible.
-const store = new Store() as any;
+type DeskoyStore = {
+  get: (key: string, defaultValue?: unknown) => unknown;
+  set: (key: string, value: unknown) => void;
+  clear: () => void;
+};
+
+// Keep the app insulated from electron-store's version-specific generic surface.
+const store = new Store() as unknown as DeskoyStore;
 
 const FEEDBACK_BUG_COOLDOWN_MS = 5 * 60 * 60 * 1000;
 
@@ -270,15 +276,7 @@ function defaultSettings(): DeskoySettings {
     useCustomCover: false,
     autoCoverBlocked: false,
     blockedApps: ['1Password', 'Bitwarden', 'KeePass', 'LastPass', 'Outlook', 'Discord'],
-    blockedTitleKeywords: [
-      'password',
-      'bank',
-      'invoice',
-      'tax',
-      'accounts.google.com',
-      'mail.google.com',
-      'discord.com/channels',
-    ],
+    blockedTitleKeywords: [],
     theme: 'dark',
   };
 }
@@ -1201,7 +1199,6 @@ ipcMain.handle('deskoy:getState', async () => ({
 }));
 ipcMain.handle('deskoy:toggle', async () => toggleDeskoyArmed());
 ipcMain.handle('deskoy:getSettings', async () => getSettings());
-ipcMain.handle('deskoy:getActiveWindowInfo', async () => getActiveWindowInfo());
 ipcMain.handle('deskoy:saveSettings', async (_evt, patch: Partial<DeskoySettings>) => {
   try {
     const prev = getSettings();
@@ -1323,11 +1320,6 @@ ipcMain.handle('deskoy:windowMinimize', async () => {
     settingsWindow.minimize();
   }
   return { ok: true };
-});
-
-ipcMain.handle('deskoy:windowToggleMaximize', async () => {
-  // Window size is fixed; maximize is disabled.
-  return { ok: true, isMaximized: false };
 });
 
 ipcMain.handle('deskoy:windowClose', async () => {

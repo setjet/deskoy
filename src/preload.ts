@@ -42,7 +42,6 @@ contextBridge.exposeInMainWorld('deskoy', {
   getState: () => ipcRenderer.invoke('deskoy:getState'),
   toggle: () => ipcRenderer.invoke('deskoy:toggle'),
   getSettings: () => ipcRenderer.invoke('deskoy:getSettings'),
-  getActiveWindowInfo: () => ipcRenderer.invoke('deskoy:getActiveWindowInfo'),
   saveSettings: (settings: Partial<DeskoySettings>) =>
     ipcRenderer.invoke('deskoy:saveSettings', settings),
   pickCoverFile: () => ipcRenderer.invoke('deskoy:pickCoverFile'),

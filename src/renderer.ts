@@ -1,12 +1,12 @@
 import './index.css';
 import brandLogoUrl from '../assets/logo.png';
+import { mountUpdatesPanel, refreshUpdatesPanel } from './components/UpdatesPanel';
 
 /** Matches `saveSettings` / store `coverMode` in `global.d.ts`. */
 type DeskoyCoverMode = 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
 type DeskoyBuiltInCover = Exclude<DeskoyCoverMode, 'url' | 'file'>;
 
 type DeskoySaveSettingsPatch = Parameters<Window['deskoy']['saveSettings']>[0];
-
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) throw new Error(`Missing element: ${id}`);
@@ -455,12 +455,11 @@ async function refresh() {
   autoBlockedOn = Boolean(settings.autoCoverBlocked);
   setToggle(toggleAutoBlocked, autoBlockedOn);
   blockedPanel.classList.toggle('collapsed', !autoBlockedOn);
-  blockedTitleKeywords = Array.isArray((settings as any).blockedTitleKeywords)
-    ? (settings as any).blockedTitleKeywords
+  blockedTitleKeywords = Array.isArray(settings.blockedTitleKeywords)
+    ? settings.blockedTitleKeywords
     : [];
   blockedKeywords.value = blockedTitleKeywords.join('\n');
-  const theme = (settings as any).theme as 'dark' | 'light' | 'system' | undefined;
-  applyTheme(theme ?? 'dark');
+  applyTheme(settings.theme ?? 'dark');
 
   hasUnsavedChanges = false;
   savedSnapshot = JSON.stringify(buildSettingsPatch());
@@ -899,57 +898,7 @@ spHelp.addEventListener('click', () => {
   void window.deskoy.openExternal(HELP_URL);
 });
 
-const spUpdatesTitle = el<HTMLElement>('spUpdatesTitle');
-const spUpdatesVersion = el<HTMLElement>('spUpdatesVersion');
-const spUpdatesNotes = el<HTMLElement>('spUpdatesNotes');
-const spUpdatesDownload = el<HTMLButtonElement>('spUpdatesDownload');
-const spUpdatesHint = el<HTMLElement>('spUpdatesHint');
-const spUpdatesEmpty = el<HTMLElement>('spUpdatesEmpty');
-const spUpdatesCard = el<HTMLElement>('spUpdatesCard');
-let updatesDownloadUrl = 'https://www.deskoy.com/download';
-
-spUpdatesDownload.addEventListener('click', () => void window.deskoy.openExternal(updatesDownloadUrl));
-
-async function refreshUpdatesPanel() {
-  try {
-    spUpdatesEmpty.textContent = 'Checking for updates…';
-    spUpdatesCard.toggleAttribute('hidden', true);
-    spUpdatesEmpty.removeAttribute('hidden');
-    const res = await window.deskoy.getUpdates();
-    if (!res.ok) throw new Error(res.error || 'updates_failed');
-    const data = res.data as any;
-    if (!data || data.ok !== true) throw new Error('updates_bad_payload');
-
-    const visible = Boolean(data.visible);
-    const title = typeof data.title === 'string' ? data.title.trim() : '';
-    const version = typeof data.version === 'string' ? data.version.trim() : '';
-    const notes = typeof data.notes === 'string' ? data.notes.trim() : '';
-    const downloadUrl = typeof data.downloadUrl === 'string' ? data.downloadUrl.trim() : '';
-
-    updatesDownloadUrl = downloadUrl || updatesDownloadUrl;
-    if (!visible) {
-      spUpdatesEmpty.textContent =
-        'You’re up to date. New versions of Deskoy will appear here.';
-      spUpdatesEmpty.removeAttribute('hidden');
-      spUpdatesCard.toggleAttribute('hidden', true);
-      return;
-    }
-
-    spUpdatesTitle.textContent = title || 'Deskoy update';
-    spUpdatesVersion.textContent = version || '—';
-    spUpdatesNotes.textContent = notes || '—';
-    spUpdatesHint.textContent = 'Latest update available.';
-    spUpdatesDownload.disabled = !updatesDownloadUrl;
-    spUpdatesEmpty.toggleAttribute('hidden', true);
-    spUpdatesCard.removeAttribute('hidden');
-  } catch {
-    // fail-open
-    spUpdatesCard.toggleAttribute('hidden', true);
-    spUpdatesEmpty.textContent =
-      'Updates aren’t available right now. Please check again later.';
-    spUpdatesEmpty.removeAttribute('hidden');
-  }
-}
+mountUpdatesPanel(el<HTMLElement>('spUpdatesRoot'));
 
 function openDeskoyStatusPage() {
   void window.deskoy.openExternal(STATUS_PAGE_URL);

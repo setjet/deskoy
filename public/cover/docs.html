@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Q1 Planning Notes - Google Docs</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #f6f7f9;
+        font-family: Arial, Helvetica, sans-serif;
+        color: #202124;
+        overflow: hidden;
+      }
+      .top {
+        height: 54px;
+        background: #fff;
+        border-bottom: 1px solid #dadce0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        gap: 12px;
+      }
+      .top-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .top-right {
+        color: #5f6368;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .doc-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: #1a73e8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .02em;
+      }
+      .title {
+        font-size: 14px;
+        color: #3c4043;
+      }
+      .ribbon {
+        height: 46px;
+        background: #fff;
+        border-bottom: 1px solid #e8eaed;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+        gap: 8px;
+      }
+      .tool {
+        width: 22px;
+        height: 22px;
+        background: #f1f3f4;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
+      .spacer { flex: 1; }
+      .chip {
+        height: 28px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        border: 1px solid #dadce0;
+        background: #fff;
+        color: #1a73e8;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: #e8f0fe;
+        border: 1px solid #d2e3fc;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #1a73e8;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .page-wrap {
+        height: calc(100% - 54px - 46px);
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        padding-top: 24px;
+        overflow: auto;
+      }
+      .page-wrap::-webkit-scrollbar { width: 10px; }
+      .page-wrap::-webkit-scrollbar-thumb { background: rgba(60,64,67,0.22); border-radius: 10px; border: 2px solid #f6f7f9; }
+      .page {
+        width: min(930px, calc(100% - 48px));
+        min-height: calc(100% - 42px);
+        background: #fff;
+        border: 1px solid #dadce0;
+        box-shadow: 0 10px 30px rgba(60, 64, 67, 0.18);
+        padding: 56px 64px;
+        box-sizing: border-box;
+      }
+      @media (max-width: 820px) {
+        .page {
+          width: calc(100% - 20px);
+          padding: 24px 20px;
+        }
+      }
+      h1 {
+        margin: 0 0 18px;
+        font-size: 24px;
+        font-weight: 400;
+      }
+      p {
+        margin: 0 0 14px;
+        line-height: 1.6;
+        font-size: 13.5px;
+      }
+      ul { margin: 0 0 14px 18px; font-size: 13.5px; }
+      li { margin: 7px 0; }
+      .caret {
+        display: inline-block;
+        width: 1px;
+        height: 14px;
+        background: #1a73e8;
+        vertical-align: -2px;
+        margin-left: 2px;
+        animation: blink 1s steps(2, end) infinite;
+      }
+      @keyframes blink {
+        50% { opacity: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="top">
+      <div class="top-left">
+        <div class="doc-icon">D</div>
+        <div class="title">Q1 Planning Notes - Google Docs</div>
+      </div>
+      <div class="top-right">
+        <span>Last edit <span id="lastEdit">just now</span></span>
+        <span class="avatar">AJ</span>
+      </div>
+    </div>
+    <div class="ribbon">
+      <div class="tool"></div><div class="tool"></div><div class="tool"></div><div class="tool"></div>
+      <div class="tool"></div><div class="tool"></div><div class="tool"></div><div class="tool"></div>
+      <span class="spacer"></span>
+      <span class="chip">Share</span>
+    </div>
+    <div class="page-wrap">
+      <div class="page">
+        <h1>Q1 Operations Plan</h1>
+        <p>Team priorities for quarter one with milestones, staffing, and rollout checkpoints.</p>
+        <ul>
+          <li>Finalize regional budget allocations before month close.</li>
+          <li>Ship reporting automation for sales and support dashboards.</li>
+          <li>Coordinate onboarding updates with enablement team.</li>
+          <li>Review weekly variance and mitigation actions.</li>
+        </ul>
+        <p id="liveLine">Prepared for Monday leadership review. Draft v3.<span class="caret"></span></p>
+      </div>
+    </div>
+    <script>
+      const lastEdit = document.getElementById("lastEdit");
+      const liveLine = document.getElementById("liveLine");
+      let version = 3;
+      function refreshEdit() {
+        const secondsAgo = 1 + Math.floor(Math.random() * 40);
+        lastEdit.textContent = `${secondsAgo}s ago`;
+      }
+      function refreshLine() {
+        version = version === 3 ? 4 : 3;
+        liveLine.innerHTML = `Prepared for Monday leadership review. Draft v${version}.<span class="caret"></span>`;
+      }
+      refreshEdit();
+      setInterval(refreshEdit, 2000);
+      setInterval(refreshLine, 4200);
+    </script>
+  </body>
+</html>
+

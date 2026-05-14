@@ -1,20 +1,26 @@
 {
   "compilerOptions": {
-    "target": "ES6",
-    "allowJs": true,
-    "module": "commonjs",
+    "target": "ES2020",
+    "allowJs": false,
+    "module": "ESNext",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "noImplicitAny": true,
     "sourceMap": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "outDir": "dist",
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "paths": {
-      "*": ["node_modules/*"]
-    }
+    "moduleResolution": "Bundler",
+    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "resolveJsonModule": true
   },
-  "include": ["src/**/*"]
+  "include": [
+    "src/App.tsx",
+    "src/main.tsx",
+    "src/tauri-deskoy-api.ts",
+    "src/legacy-ui.ts",
+    "src/global.d.ts",
+    "src/images.d.ts",
+    "src/components/**/*.tsx"
+  ],
+  "exclude": ["src/index.ts", "src/preload.ts", "src/renderer.ts", "src/windows-session.ts"]
 }

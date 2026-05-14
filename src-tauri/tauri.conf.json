@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Deskoy",
+  "version": "1.2.3",
+  "identifier": "com.deskoy.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Deskoy",
+        "width": 900,
+        "height": 600,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false,
+        "visible": true,
+        "backgroundColor": "#111113"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../assets/icon.ico",
+      "../assets/icon.png"
+    ],
+    "resources": [
+      "../assets/*",
+      "../public/cover/*"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "../assets/icon.ico",
+        "uninstallerIcon": "../assets/icon.ico"
+      }
+    }
+  }
+}

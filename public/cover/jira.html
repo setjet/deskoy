@@ -1,0 +1,178 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sprint Board - Jira</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --lane: #1f2937;
+        --card: #0b1220;
+        --line: #374151;
+        --text: #e5e7eb;
+        --muted: #94a3b8;
+        --blue: #3b82f6;
+        --green: #22c55e;
+        --amber: #f59e0b;
+      }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+        overflow: hidden;
+      }
+      .top {
+        height: 46px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 14px;
+        font-size: 13px;
+      }
+      .top-left { display:flex; align-items:center; gap:10px; }
+      .logo {
+        width: 26px; height: 26px; border-radius: 8px;
+        background: rgba(59,130,246,0.18);
+        border: 1px solid rgba(59,130,246,0.28);
+        display:flex; align-items:center; justify-content:center;
+        color:#93c5fd; font-weight:800; letter-spacing:.02em;
+      }
+      .meta { color: var(--muted); font-size: 12px; }
+      .board {
+        height: calc(100% - 46px);
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        padding: 12px;
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+      .lane {
+        background: var(--lane);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+        overflow: auto;
+      }
+      .lane::-webkit-scrollbar { width: 8px; }
+      .lane::-webkit-scrollbar-thumb { background: rgba(226,232,240,0.14); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+      .lane h3 {
+        margin: 0;
+        font-size: 12px;
+        color: #cbd5e1;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+      }
+      .ticket {
+        background: var(--card);
+        border: 1px solid #243044;
+        border-radius: 8px;
+        padding: 8px;
+        font-size: 12px;
+      }
+      .ticket-title { margin: 0 0 6px; font-weight: 600; }
+      .ticket-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .who {
+        display:flex; align-items:center; gap:8px;
+      }
+      .avatar {
+        width: 18px; height: 18px; border-radius: 999px;
+        background: rgba(148,163,184,0.16);
+        border: 1px solid rgba(148,163,184,0.22);
+      }
+      .tag {
+        border-radius: 999px;
+        padding: 2px 7px;
+        font-size: 10px;
+        border: 1px solid;
+      }
+      .t-blue { color: #93c5fd; border-color: #3b82f655; }
+      .t-green { color: #86efac; border-color: #22c55e55; }
+      .t-amber { color: #fcd34d; border-color: #f59e0b55; }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--green);
+        display: inline-block;
+      }
+      .pulse {
+        animation: pulse 1.6s infinite;
+      }
+      @keyframes pulse { 50% { opacity: .35; } }
+
+      @media (max-width: 1100px) {
+        .board {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          overflow-y: auto;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .board {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="top">
+      <div class="top-left">
+        <div class="logo">J</div>
+        <div>Sprint Board · Platform Ops</div>
+      </div>
+      <div class="meta">Last sync: <span id="clock">--:--:--</span></div>
+    </div>
+    <div class="board">
+      <div class="lane">
+        <h3>Backlog</h3>
+        <div class="ticket"><p class="ticket-title">OPS-142 Add audit export filter</p><div class="ticket-meta"><span class="tag t-blue">Feature</span><span class="who"><span class="avatar"></span>2 pts</span></div></div>
+        <div class="ticket"><p class="ticket-title">OPS-146 Harden webhook retries</p><div class="ticket-meta"><span class="tag t-amber">Task</span><span class="who"><span class="avatar"></span>3 pts</span></div></div>
+      </div>
+      <div class="lane">
+        <h3>In Progress</h3>
+        <div class="ticket"><p class="ticket-title">OPS-150 Cache dashboard queries</p><div class="ticket-meta"><span class="tag t-green">Optimization</span><span class="who"><span class="dot pulse"></span><span class="avatar"></span>Active</span></div></div>
+        <div class="ticket"><p class="ticket-title">OPS-151 Refactor report scheduler</p><div class="ticket-meta"><span class="tag t-blue">Feature</span><span class="who"><span class="avatar"></span>5 pts</span></div></div>
+      </div>
+      <div class="lane">
+        <h3>Review</h3>
+        <div class="ticket"><p class="ticket-title">OPS-139 Billing anomaly detector</p><div class="ticket-meta"><span class="tag t-amber">Review</span><span class="who"><span class="avatar"></span><span id="reviewCount">2 comments</span></span></div></div>
+      </div>
+      <div class="lane">
+        <h3>Done</h3>
+        <div class="ticket"><p class="ticket-title">OPS-131 Improve alert dedupe</p><div class="ticket-meta"><span class="tag t-green">Done</span><span class="who"><span class="avatar"></span>Today</span></div></div>
+        <div class="ticket"><p class="ticket-title">OPS-128 Permission cleanup</p><div class="ticket-meta"><span class="tag t-green">Done</span><span class="who"><span class="avatar"></span>Today</span></div></div>
+      </div>
+    </div>
+    <script>
+      const clock = document.getElementById('clock');
+      const review = document.getElementById('reviewCount');
+      let comments = 2;
+      setInterval(() => {
+        const d = new Date();
+        clock.textContent = d.toLocaleTimeString();
+      }, 1000);
+      setInterval(() => {
+        comments = comments === 2 ? 3 : 2;
+        review.textContent = `${comments} comments`;
+      }, 3500);
+    </script>
+  </body>
+</html>
+

@@ -60,6 +60,10 @@ typings/
 # App-local overrides (never commit)
 deskoy-webhooks.json
 
+# Local release draft notes
+GITHUB_RELEASE_*.md
+RELEASE_NOTES_*.md
+
 # dotenv environment variables file
 .env
 .env.local

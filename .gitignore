@@ -91,9 +91,13 @@ deskoy-webhooks.json
 
 # Vite
 .vite/
+dist/
 
 # Electron-Forge
 out/
+
+# Tauri/Rust build output
+src-tauri/target/
 
 # Server relay lives in its own repo / Vercel — do not publish from this app repo
 deskoy-relay/

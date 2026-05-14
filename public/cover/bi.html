@@ -1,0 +1,204 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Executive KPI Dashboard</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #121a31;
+        --card: #1a2645;
+        --line: #2b3b66;
+        --text: #e2e8f0;
+        --muted: #93a4c8;
+        --green: #22c55e;
+        --amber: #f59e0b;
+        --blue: #60a5fa;
+        --shadow: 0 14px 40px rgba(2, 6, 23, 0.45);
+      }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+        overflow: hidden;
+      }
+      .top {
+        height: 44px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 14px;
+        font-size: 13px;
+      }
+      .top-left { display:flex; align-items:center; gap:10px; }
+      .mark {
+        width: 26px; height: 26px; border-radius: 9px;
+        background: rgba(96,165,250,0.16);
+        border: 1px solid rgba(96,165,250,0.24);
+        display:flex; align-items:center; justify-content:center;
+        color:#bfdbfe; font-weight:800;
+      }
+      .muted { color: var(--muted); }
+      .grid {
+        height: calc(100% - 44px);
+        padding: 12px;
+        box-sizing: border-box;
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-auto-rows: minmax(0, auto);
+        overflow: hidden;
+      }
+      .kpi {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: var(--shadow);
+      }
+      .kpi-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+      .kpi-value { margin-top: 6px; font-size: 24px; font-weight: 700; }
+      .kpi-delta { margin-top: 4px; font-size: 11px; color: var(--green); }
+      .panel {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: var(--shadow);
+      }
+      .big {
+        grid-column: span 2;
+      }
+      .chart {
+        margin-top: 8px;
+        height: 120px;
+        border-radius: 6px;
+        background:
+          linear-gradient(180deg, rgba(96,165,250,.2), rgba(96,165,250,0)),
+          repeating-linear-gradient(90deg, transparent, transparent 19%, rgba(147,164,200,.15) 20%);
+        position: relative;
+        overflow: hidden;
+      }
+      .bar {
+        position: absolute;
+        bottom: 0;
+        width: 18px;
+        background: var(--blue);
+        border-radius: 4px 4px 0 0;
+        box-shadow: 0 8px 18px rgba(96,165,250,0.22);
+      }
+      .table {
+        margin-top: 8px;
+        font-size: 12px;
+        overflow: hidden;
+      }
+      .tr {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 8px;
+        padding: 6px 0;
+        border-bottom: 1px solid #283559;
+      }
+      .tr:last-child { border-bottom: 0; }
+      .pill {
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(147,164,200,0.25);
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .pill .dot {
+        width: 8px;height:8px;border-radius:999px;background: var(--green);
+        animation: pulse 1.6s infinite;
+      }
+      @keyframes pulse { 50% { opacity: .35; } }
+
+      @media (max-width: 1100px) {
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          overflow-y: auto;
+        }
+        .big { grid-column: span 2; }
+      }
+
+      @media (max-width: 700px) {
+        .grid {
+          grid-template-columns: minmax(0, 1fr);
+          overflow-y: auto;
+        }
+        .big { grid-column: span 1; }
+        .kpi-value { font-size: 20px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="top">
+      <div class="top-left">
+        <div class="mark">BI</div>
+        <div>Executive KPI Dashboard</div>
+      </div>
+      <div class="pill"><span class="dot"></span><span>Live</span><span class="muted" style="opacity:.9">·</span><span class="muted"><span id="clock">--:--:--</span></span></div>
+    </div>
+    <div class="grid">
+      <div class="kpi"><div class="kpi-title">Revenue</div><div class="kpi-value" id="rev">£441.8k</div><div class="kpi-delta">+2.1%</div></div>
+      <div class="kpi"><div class="kpi-title">Conversion</div><div class="kpi-value" id="conv">4.92%</div><div class="kpi-delta">+0.3%</div></div>
+      <div class="kpi"><div class="kpi-title">Churn</div><div class="kpi-value" id="churn">1.21%</div><div class="kpi-delta" style="color:var(--amber)">-0.1%</div></div>
+      <div class="kpi"><div class="kpi-title">NPS</div><div class="kpi-value" id="nps">58</div><div class="kpi-delta">+1</div></div>
+
+      <div class="panel big">
+        <div class="kpi-title">Weekly Performance</div>
+        <div class="chart">
+          <div class="bar" id="b1" style="left:12px;height:48%"></div>
+          <div class="bar" id="b2" style="left:40px;height:54%"></div>
+          <div class="bar" id="b3" style="left:68px;height:59%"></div>
+          <div class="bar" id="b4" style="left:96px;height:63%"></div>
+          <div class="bar" id="b5" style="left:124px;height:58%"></div>
+          <div class="bar" id="b6" style="left:152px;height:66%"></div>
+          <div class="bar" id="b7" style="left:180px;height:69%"></div>
+        </div>
+      </div>
+      <div class="panel big">
+        <div class="kpi-title">Regional Snapshot</div>
+        <div class="table">
+          <div class="tr"><span>North</span><span id="n1">£131.2k</span><span class="muted">+5.8%</span></div>
+          <div class="tr"><span>South</span><span id="n2">£94.3k</span><span class="muted">-4.2%</span></div>
+          <div class="tr"><span>Midlands</span><span id="n3">£91.5k</span><span class="muted">+5.0%</span></div>
+          <div class="tr"><span>Scotland</span><span id="n4">£79.4k</span><span class="muted">+3.3%</span></div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const clock = document.getElementById('clock');
+      const rev = document.getElementById('rev');
+      const conv = document.getElementById('conv');
+      const nps = document.getElementById('nps');
+      const bars = Array.from({ length: 7 }, (_, i) => document.getElementById(`b${i + 1}`));
+      function tick() {
+        const d = new Date();
+        clock.textContent = d.toLocaleTimeString();
+      }
+      function wiggle() {
+        const revNum = 440 + Math.random() * 4;
+        rev.textContent = `£${revNum.toFixed(1)}k`;
+        conv.textContent = `${(4.7 + Math.random() * 0.4).toFixed(2)}%`;
+        nps.textContent = `${57 + Math.round(Math.random() * 2)}`;
+        bars.forEach((b) => {
+          const h = 45 + Math.round(Math.random() * 28);
+          b.style.height = `${h}%`;
+        });
+      }
+      setInterval(tick, 1000);
+      setInterval(wiggle, 2400);
+      tick();
+    </script>
+  </body>
+</html>
+

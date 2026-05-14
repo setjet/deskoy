@@ -20,9 +20,19 @@ declare global {
         useCustomCover: boolean;
         autoCoverBlocked: boolean;
         blockedApps: string[];
+        blockedWebsites: string[];
         blockedTitleKeywords: string[];
         theme: 'dark' | 'light' | 'system';
       }>;
+      getProtectionLogs: () => Promise<
+        Array<{
+          timestamp: number;
+          processName: string;
+          title: string;
+          action: string;
+        }>
+      >;
+      clearProtectionLogs: () => Promise<{ ok: boolean; error?: string }>;
       saveSettings: (
         settings: Partial<{
           hotkey: string;
@@ -36,6 +46,7 @@ declare global {
           useCustomCover: boolean;
           autoCoverBlocked: boolean;
           blockedApps: string[];
+          blockedWebsites: string[];
           blockedTitleKeywords: string[];
           theme: 'dark' | 'light' | 'system';
         }>,

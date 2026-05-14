@@ -1,0 +1,242 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>index.js — Visual Studio Code</title>
+    <style>
+      :root{
+        --bg:#1e1e1e;
+        --panel:#252526;
+        --panel2:#2d2d2d;
+        --text:#d4d4d4;
+        --muted:#9aa0a6;
+        --blue:#3794ff;
+        --green:#6a9955;
+        --yellow:#dcdcaa;
+        --pink:#c586c0;
+        --orange:#ce9178;
+        --line:#3c3c3c;
+        --font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        --ui: system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+      }
+      html,body{height:100%;margin:0;background:var(--bg);color:var(--text);overflow:hidden;}
+      .titlebar{
+        height:32px;background:#111;display:flex;align-items:center;
+        justify-content:space-between;
+        padding:0 12px;font:12px var(--ui);color:#e5e7eb;
+      }
+      .clock{color:#9aa0a6;font-size:11px;}
+      .root{height:calc(100% - 32px);display:grid;grid-template-columns: 48px 260px minmax(0, 1fr);}
+      .activity{
+        background:#1b1b1c;
+        border-right:1px solid var(--line);
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        padding:8px 0;
+        gap:10px;
+      }
+      .act{
+        width:34px;height:34px;border-radius:10px;
+        display:flex;align-items:center;justify-content:center;
+        color:#9aa0a6;
+      }
+      .act.active{background:rgba(255,255,255,0.06);color:#fff;}
+      .act svg{width:18px;height:18px;display:block;}
+      .sidebar{
+        background:var(--panel);
+        border-right:1px solid var(--line);
+        display:grid;
+        grid-template-rows: 36px 1fr;
+      }
+      .sidehead{
+        display:flex;align-items:center;justify-content:space-between;
+        padding:0 12px;font:12px var(--ui);color:#cbd5e1;
+        border-bottom:1px solid var(--line);
+      }
+      .tree{padding:10px 10px 0;font:12px var(--ui);color:#cbd5e1;}
+      .file{padding:6px 8px;border-radius:6px;}
+      .file.active{background:var(--panel2);color:#fff;}
+      .main{display:grid;grid-template-rows: 28px 34px minmax(0, 1fr) 180px 22px;min-width:0;}
+      .crumbs{
+        background:var(--panel);
+        border-bottom:1px solid var(--line);
+        display:flex;
+        align-items:center;
+        gap:8px;
+        padding:0 10px;
+        font:12px var(--ui);
+        color:#9aa0a6;
+      }
+      .crumbs .sep{opacity:.55}
+      .tabs{
+        background:var(--panel);border-bottom:1px solid var(--line);
+        display:flex;align-items:center;gap:8px;padding:0 10px;font:12px var(--ui);
+      }
+      .tab{
+        background:var(--panel2);border:1px solid var(--line);border-bottom-color:transparent;
+        padding:6px 10px;border-radius:8px 8px 0 0;color:#fff;
+        display:flex;align-items:center;gap:8px;
+      }
+      .tab .dot{width:10px;height:10px;border-radius:2px;background:#3794ff;opacity:.95}
+      .editor{
+        position:relative;
+        overflow:auto;
+        padding:14px 0 0;
+        font:13px/20px var(--font);
+      }
+      .code{
+        display:grid;
+        grid-template-columns: 48px 1fr;
+        padding:0 14px;
+        color:var(--text);
+      }
+      .ln{
+        color:#6b7280;
+        text-align:right;
+        padding-right:12px;
+        user-select:none;
+      }
+      .tok-k{color:var(--pink);}
+      .tok-f{color:var(--yellow);}
+      .tok-s{color:var(--orange);}
+      .tok-n{color:var(--blue);}
+      .tok-c{color:var(--green);}
+      .tok-p{color:var(--text);}
+      .terminal{
+        background:#0f0f0f;
+        border-top:1px solid var(--line);
+        padding:10px 14px;
+        font:12px/18px var(--font);
+        color:#cbd5e1;
+      }
+      .cursor{
+        display:inline-block;width:7px;height:15px;background:#fff;vertical-align:-2px;
+        animation:blink 1s steps(2,end) infinite;margin-left:2px;
+      }
+      @keyframes blink{50%{opacity:0;}}
+      .statusbar{
+        background:#007acc;
+        color:#eaf2ff;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:0 10px;
+        font:11px var(--ui);
+      }
+      .sb-left,.sb-right{display:flex;align-items:center;gap:10px;opacity:.95}
+      .pill{
+        padding:2px 8px;border-radius:999px;background:rgba(0,0,0,0.18);
+      }
+      @media (max-width: 780px){
+        .root{grid-template-columns: 48px 1fr;}
+        .sidebar{display:none;}
+      }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <span>index.js — Visual Studio Code</span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+    <div class="root">
+      <div class="activity">
+        <div class="act active" title="Explorer" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M4 7h6l2 2h8v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="M4 7a2 2 0 0 1 2-2h4l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="act" title="Search" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="act" title="Source Control" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M7 7a3 3 0 1 0 0 .01V7Zm10 10a3 3 0 1 0 0 .01V17Z" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M7 10v3a4 4 0 0 0 4 4h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M17 14v-3a4 4 0 0 0-4-4h-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+      <div class="sidebar">
+        <div class="sidehead"><span>EXPLORER</span><span style="color:#6b7280">DESKOY-DEMO</span></div>
+        <div class="tree">
+          <div style="color:#9aa0a6;font-size:11px;margin:0 0 6px 8px">src</div>
+          <div class="file">utils.js</div>
+          <div class="file active">index.js</div>
+          <div class="file">api.js</div>
+          <div style="color:#9aa0a6;font-size:11px;margin:10px 0 6px 8px">tests</div>
+          <div class="file">index.test.js</div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="crumbs">
+          <span>DESKOY-DEMO</span><span class="sep">›</span><span>src</span><span class="sep">›</span><span style="color:#e5e7eb">index.js</span>
+          <span style="margin-left:auto" class="pill">Ln 12, Col 18</span>
+        </div>
+        <div class="tabs">
+          <div class="tab"><span class="dot"></span>index.js</div>
+          <div style="margin-left:auto;color:#9aa0a6">JavaScript</div>
+        </div>
+        <div class="editor">
+          <div class="code">
+            <div class="ln">1</div><div><span class="tok-c">// Q1 sales rollup</span></div>
+            <div class="ln">2</div><div><span class="tok-k">import</span> { <span class="tok-f">sumBy</span> } <span class="tok-k">from</span> <span class="tok-s">'./utils'</span><span class="tok-p">;</span></div>
+            <div class="ln">3</div><div><span class="tok-k">import</span> { <span class="tok-f">fetchRegions</span> } <span class="tok-k">from</span> <span class="tok-s">'./api'</span><span class="tok-p">;</span></div>
+            <div class="ln">4</div><div>&nbsp;</div>
+            <div class="ln">5</div><div><span class="tok-k">export</span> <span class="tok-k">async</span> <span class="tok-k">function</span> <span class="tok-f">buildReport</span><span class="tok-p">()</span> <span class="tok-p">{</span></div>
+            <div class="ln">6</div><div>&nbsp;&nbsp;<span class="tok-k">const</span> <span class="tok-n">regions</span> <span class="tok-p">=</span> <span class="tok-k">await</span> <span class="tok-f">fetchRegions</span><span class="tok-p">();</span></div>
+            <div class="ln">7</div><div>&nbsp;&nbsp;<span class="tok-k">const</span> <span class="tok-n">target</span> <span class="tok-p">=</span> <span class="tok-f">sumBy</span><span class="tok-p">(</span><span class="tok-n">regions</span><span class="tok-p">,</span> <span class="tok-s">'target'</span><span class="tok-p">);</span></div>
+            <div class="ln">8</div><div>&nbsp;&nbsp;<span class="tok-k">const</span> <span class="tok-n">actual</span> <span class="tok-p">=</span> <span class="tok-f">sumBy</span><span class="tok-p">(</span><span class="tok-n">regions</span><span class="tok-p">,</span> <span class="tok-s">'actual'</span><span class="tok-p">);</span></div>
+            <div class="ln">9</div><div>&nbsp;&nbsp;<span class="tok-k">return</span> <span class="tok-p">{</span> <span class="tok-n">target</span><span class="tok-p">,</span> <span class="tok-n">actual</span><span class="tok-p">,</span> <span class="tok-n">variance</span><span class="tok-p">:</span> <span class="tok-n">actual</span> <span class="tok-p">-</span> <span class="tok-n">target</span> <span class="tok-p">};</span></div>
+            <div class="ln">10</div><div><span class="tok-p">}</span></div>
+            <div class="ln">11</div><div>&nbsp;</div>
+            <div class="ln">12</div><div><span class="tok-f">buildReport</span><span class="tok-p">().</span><span class="tok-f">then</span><span class="tok-p">(</span><span class="tok-n">r</span> <span class="tok-p">=&gt;</span> <span class="tok-n">console</span><span class="tok-p">.</span><span class="tok-f">log</span><span class="tok-p">(</span><span class="tok-n">r</span><span class="tok-p">))</span><span class="tok-p">;</span></div>
+          </div>
+        </div>
+        <div class="terminal">
+          <div style="color:#9aa0a6;margin-bottom:6px;font-family:var(--ui);font-size:11px">TERMINAL</div>
+          <div><span style="color:#22c55e">PS</span> C:\\Users\\User\\projects\\deskoy-demo&gt; node index.js</div>
+          <div id="terminalLine">{ target: 432200, actual: 441830, variance: 9630 }<span class="cursor"></span></div>
+        </div>
+        <div class="statusbar">
+          <div class="sb-left">
+            <span>main</span>
+            <span class="pill">UTF-8</span>
+            <span>CRLF</span>
+          </div>
+          <div class="sb-right">
+            <span>JavaScript</span>
+            <span id="sbTime">--:--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const clock = document.getElementById("clock");
+      const terminalLine = document.getElementById("terminalLine");
+      const sbTime = document.getElementById("sbTime");
+      function tickClock() {
+        clock.textContent = new Date().toLocaleTimeString();
+        if (sbTime) {
+          const d = new Date();
+          sbTime.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+      }
+      function updateTerminal() {
+        const actual = 441000 + Math.floor(Math.random() * 2200);
+        const variance = actual - 432200;
+        terminalLine.innerHTML = `{ target: 432200, actual: ${actual}, variance: ${variance} }<span class="cursor"></span>`;
+      }
+      tickClock();
+      updateTerminal();
+      setInterval(tickClock, 1000);
+      setInterval(updateTerminal, 3100);
+    </script>
+  </body>
+</html>
+

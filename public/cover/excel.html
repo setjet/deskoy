@@ -1,0 +1,361 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Q1_Sales_Report_Final_v3.xlsx — Microsoft Excel</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --white: #ffffff;
+        --text: #111827;
+        --muted: #6b7280;
+        --line: #e6e8ee;
+        --shadow: 0 14px 40px rgba(15, 23, 42, 0.12);
+        --tab: #0f6cbd;
+        --tab2: #107c41;
+        --accent: #22c55e;
+        --font: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+      }
+      html, body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        user-select: none;
+        overflow: hidden;
+      }
+      .titlebar {
+        height: 34px;
+        background: linear-gradient(180deg, #111827, #0b1220);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+        font-size: 12.5px;
+        letter-spacing: 0.2px;
+      }
+      .clock {
+        color: #9ca3af;
+        font-size: 11px;
+      }
+      .ribbon {
+        height: 92px;
+        background: var(--white);
+        border-bottom: 1px solid var(--line);
+        display: grid;
+        grid-template-rows: 30px 1fr;
+        box-shadow: 0 1px 0 rgba(17, 24, 39, 0.04);
+      }
+      .menus {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        padding: 0 14px;
+        font-size: 12px;
+        color: #111827;
+      }
+      .menus span:first-child {
+        font-weight: 650;
+        color: #0f6cbd;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+        color: var(--muted);
+        font-size: 11px;
+        gap: 10px;
+      }
+      .toolbar .pill {
+        height: 18px;
+        width: 70px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: #fafafa;
+      }
+      .toolbar .sep {
+        width: 1px;
+        height: 18px;
+        background: var(--line);
+        margin: 0 2px;
+      }
+      .toolbar .chip {
+        height: 20px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fbfbfd;
+        color: #374151;
+        font-weight: 600;
+      }
+      .toolbar .dotg {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--tab2);
+      }
+      .formula {
+        height: 34px;
+        background: var(--white);
+        border-bottom: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: 70px 1fr;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        font-size: 12px;
+      }
+      .namebox {
+        height: 22px;
+        border: 1px solid var(--line);
+        background: #fafafa;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 600;
+      }
+      .fx {
+        height: 22px;
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: #111827;
+      }
+      .sheet {
+        height: calc(100% - 34px - 92px - 34px - 34px);
+        background: var(--white);
+        display: grid;
+        grid-template-rows: 26px 1fr;
+        overflow: auto;
+        box-shadow: var(--shadow);
+      }
+      .sheet::-webkit-scrollbar { width: 10px; height: 10px; }
+      .sheet::-webkit-scrollbar-thumb { background: rgba(17,24,39,0.16); border-radius: 10px; border: 2px solid #fff; }
+      .sheet::-webkit-scrollbar-thumb:hover { background: rgba(17,24,39,0.24); }
+      .colheads {
+        display: grid;
+        grid-template-columns: 46px repeat(26, 96px);
+        border-bottom: 1px solid var(--line);
+        background: #fafafa;
+        font-size: 11px;
+        color: #374151;
+      }
+      .colheads div {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-right: 1px solid var(--line);
+      }
+      .grid {
+        overflow: hidden;
+        display: grid;
+        grid-template-columns: 46px repeat(26, 96px);
+      }
+      .rowhead, .cell {
+        height: 22px;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        font-size: 11px;
+        padding: 0 6px;
+        display: flex;
+        align-items: center;
+        background: #fff;
+      }
+      .rowhead {
+        justify-content: center;
+        background: #fafafa;
+        color: #374151;
+        padding: 0;
+      }
+      .cell.header {
+        font-weight: 650;
+        background: #f9fafb;
+      }
+      .cell.right { justify-content: flex-end; }
+      .cell.neg { color: #b42318; }
+      .cell.pos { color: #067647; }
+      .cell.note { color: #1f2937; background: #fffef5; }
+      .tabs {
+        height: 34px;
+        background: var(--white);
+        border-top: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+      .tab {
+        padding: 6px 12px;
+        border: 1px solid var(--line);
+        border-bottom-color: #fff;
+        border-radius: 6px 6px 0 0;
+        background: #fff;
+        font-weight: 600;
+      }
+      .tab.muted {
+        background: #fafafa;
+        font-weight: 500;
+        color: #374151;
+        border-bottom-color: var(--line);
+        border-radius: 6px;
+      }
+      /* Active cell (B4) */
+      .active {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+        position: relative;
+      }
+      .active::after {
+        content: "";
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+      }
+      .caret {
+        display: inline-block;
+        width: 1px;
+        height: 12px;
+        background: #111827;
+        margin-left: 2px;
+        animation: blink 1s steps(2, end) infinite;
+      }
+      @keyframes blink {
+        50% { opacity: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="titlebar">
+      <span>Q1_Sales_Report_Final_v3.xlsx — Microsoft Excel</span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+    <div class="ribbon">
+      <div class="menus">
+        <span>File</span><span>Edit</span><span>View</span><span>Insert</span><span>Format</span><span>Data</span><span>Review</span><span>Help</span>
+      </div>
+      <div class="toolbar">
+        <div class="pill"></div><div class="pill" style="width: 56px"></div><div class="pill" style="width: 90px"></div>
+        <span class="sep"></span>
+        <span class="chip"><span class="dotg"></span>AutoSave</span>
+        <span>Calibri</span><span>11</span><span style="margin-left: 6px">AutoSum</span><span>Sort</span><span>Filter</span>
+      </div>
+    </div>
+    <div class="formula">
+      <div class="namebox">B4</div>
+      <div class="fx">=IF(D4&gt;0,"Above target","Below target")</div>
+    </div>
+
+    <div class="sheet" id="sheet">
+      <div class="colheads" id="colheads"></div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab">Sheet1</div>
+      <div class="tab muted">Sheet2</div>
+      <div class="tab muted">Sheet3</div>
+      <div style="margin-left:auto;color:#6b7280;font-size:11px">Ready</div>
+    </div>
+
+    <script>
+      const cols = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+      const colheads = document.getElementById("colheads");
+      colheads.appendChild(document.createElement("div")); // top-left corner
+      cols.forEach(c => {
+        const d = document.createElement("div");
+        d.textContent = c;
+        colheads.appendChild(d);
+      });
+
+      const grid = document.getElementById("grid");
+      const data = {
+        "A1":"Region","B1":"Q1 Target","C1":"Q1 Actual","D1":"Variance","E1":"% Change",
+        "A2":"North England","B2":"£124,000","C2":"£131,240","D2":"£7,240","E2":"5.8%",
+        "A3":"South England","B3":"£98,500","C3":"£94,320","D3":"-£4,180","E3":"-4.2%",
+        "A4":"Midlands","B4":"£87,200","C4":"£91,560","D4":"£4,360","E4":"5.0%",
+        "A5":"Scotland","B5":"£76,900","C5":"£79,410","D5":"£2,510","E5":"3.3%",
+        "A6":"Wales","B6":"£45,600","C6":"£44,980","D6":"-£620","E6":"-1.4%",
+        "A8":"Notes","B8":"Pipeline strong in North; focus South renewals."
+      };
+
+      const rows = 50;
+      for (let r = 1; r <= rows; r++) {
+        const rh = document.createElement("div");
+        rh.className = "rowhead";
+        rh.textContent = String(r);
+        grid.appendChild(rh);
+        for (let c = 0; c < cols.length; c++) {
+          const addr = cols[c] + r;
+          const cell = document.createElement("div");
+          cell.className = "cell";
+          const v = data[addr];
+          if (v) cell.textContent = v;
+          if (r === 1) cell.classList.add("header");
+          if (["B","C","D","E"].includes(cols[c]) && r <= 6 && r >= 2) cell.classList.add("right");
+          if ((cols[c] === "D" || cols[c] === "E") && r >= 2 && r <= 6 && v) {
+            const isNeg = String(v).trim().startsWith("-");
+            cell.classList.add(isNeg ? "neg" : "pos");
+          }
+          if (addr === "B8") cell.classList.add("note");
+          if (addr === "B4") {
+            cell.classList.add("active");
+            const caret = document.createElement("span");
+            caret.className = "caret";
+            cell.appendChild(caret);
+          }
+          if (addr === "D4" || addr === "E4" || addr === "C4") {
+            cell.id = `cell-${addr}`;
+          }
+          grid.appendChild(cell);
+        }
+      }
+
+      const clock = document.getElementById("clock");
+      const cellD4 = document.getElementById("cell-D4");
+      const cellE4 = document.getElementById("cell-E4");
+      const cellC4 = document.getElementById("cell-C4");
+      const baseActual = 91560;
+      const target = 87200;
+
+      function tickClock() {
+        clock.textContent = new Date().toLocaleTimeString();
+      }
+
+      function updateLiveValues() {
+        const actual = baseActual + Math.round((Math.random() - 0.5) * 600);
+        const variance = actual - target;
+        const pct = (variance / target) * 100;
+        if (cellC4) cellC4.textContent = `£${actual.toLocaleString("en-GB")}`;
+        if (cellD4) {
+          cellD4.textContent = `${variance < 0 ? "-£" : "£"}${Math.abs(variance).toLocaleString("en-GB")}`;
+          cellD4.classList.toggle("neg", variance < 0);
+          cellD4.classList.toggle("pos", variance >= 0);
+        }
+        if (cellE4) cellE4.textContent = `${pct.toFixed(1)}%`;
+      }
+
+      tickClock();
+      updateLiveValues();
+      setInterval(tickClock, 1000);
+      setInterval(updateLiveValues, 2600);
+    </script>
+  </body>
+</html>
+

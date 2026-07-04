@@ -28,7 +28,7 @@ Deskoy is a desktop decoy utility built for everyday privacy gaps: screen-share 
 > Deskoy reduces casual exposure. It is not a security boundary, antivirus, DRM, or protection against malware, screen recording, remote administration tools, or a determined user with access to the machine.
 
 ---
-<img width="895" height="593" alt="2026-04-21 16_13_20-Greenshot" src="https://github.com/user-attachments/assets/22be2308-20bf-4eff-bfb7-4c64ac72596d" />
+<img width="898" height="600" alt="image" src="https://github.com/user-attachments/assets/b09b23d9-5560-44dd-919d-06a824dbd80f" />
 
 ## Product Highlights
 

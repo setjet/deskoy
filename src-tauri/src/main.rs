@@ -37,14 +37,14 @@ use windows::{
 
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE},
     System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, PostMessageW, ShowWindow, SW_MINIMIZE,
-        WM_CLOSE,
+        FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId, IsIconic, IsWindow, PostMessageW, SetForegroundWindow,
+        ShowWindow, SW_MINIMIZE, SW_RESTORE, WM_CLOSE,
     },
 };
 
@@ -173,7 +173,71 @@ const COVER_MIN_VISIBLE: Duration = Duration::from_millis(700);
 const COVER_WATCHDOG_INTERVAL: Duration = Duration::from_millis(700);
 const PROTECTION_LOG_LIMIT: usize = 30;
 
+#[cfg(windows)]
+struct SingleInstanceGuard {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct SingleInstanceGuard;
+
+#[cfg(windows)]
+fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
+    let name = wide_null("Local\\DeskoySingleInstance");
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
+        if handle.is_null() {
+            return None;
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            focus_existing_main_window();
+            None
+        } else {
+            Some(SingleInstanceGuard { handle })
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
+    Some(SingleInstanceGuard)
+}
+
+#[cfg(windows)]
+fn focus_existing_main_window() {
+    let title = wide_null("Deskoy");
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn main() {
+    let _single_instance = match acquire_single_instance_guard() {
+        Some(guard) => guard,
+        None => return,
+    };
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

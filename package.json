@@ -1,7 +1,7 @@
 {
   "name": "deskoy-app",
   "productName": "Deskoy",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "My Electron application description",
   "private": true,
   "scripts": {

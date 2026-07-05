@@ -490,6 +490,15 @@ async function refresh() {
   savedSnapshot = JSON.stringify(buildSettingsPatch());
 }
 
+async function refreshActiveState() {
+  try {
+    const state = await window.deskoy.getState();
+    setActiveState(state.active);
+  } catch {
+    // Leave the last known state visible if the backend is unavailable.
+  }
+}
+
 window.deskoy.onUpgradeRequired((payload) => {
   showUpgradeRequired(payload);
 });
@@ -692,6 +701,14 @@ btnClose.addEventListener('click', async () => {
 
 window.deskoy.onStateChanged((s: { active: boolean; paused?: boolean }) => {
   setActiveState(s.active);
+});
+
+window.addEventListener('focus', () => {
+  void refreshActiveState();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) void refreshActiveState();
 });
 
 // Maximize removed (fixed-size window).

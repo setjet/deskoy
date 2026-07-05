@@ -29,6 +29,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "../assets/icon.ico",
@@ -43,6 +44,17 @@
         "installerHooks": "nsis-hooks.nsh",
         "installerIcon": "../assets/icon.ico",
         "uninstallerIcon": "../assets/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzRTBFMzk4QTVBMUM3ODUKUldTRng2R2xtT1BnUTlwRXY2Z3EyUTl6ZjlJcThiL3FzbkxsaWNibDljWUsxSzVSbE5tZyt3R3IK",
+      "endpoints": [
+        "https://github.com/deskoys/deskoy/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

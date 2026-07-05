@@ -690,7 +690,7 @@ btnClose.addEventListener('click', async () => {
   await window.deskoy.windowClose();
 });
 
-window.deskoy.onStateChanged((s: { active: boolean }) => {
+window.deskoy.onStateChanged((s: { active: boolean; paused?: boolean }) => {
   setActiveState(s.active);
 });
 
@@ -817,6 +817,16 @@ function flashInputError(elm: HTMLInputElement) {
   window.setTimeout(() => elm.classList.remove('sp-input--error'), 1200);
 }
 
+async function collectDiagnostics() {
+  try {
+    const diagnostics = await window.deskoy.getDiagnostics();
+    if (diagnostics.ok && diagnostics.data) return diagnostics.data;
+  } catch {
+    // Fall back to the minimal payload used before the native diagnostics exporter existed.
+  }
+  return { version: appVersion.textContent || null, theme: currentTheme, armed: deskoyArmed };
+}
+
 spFeedbackSend.addEventListener('click', async () => {
   const text = spFeedbackText.value.trim();
   if (!text) { setFormStatus(spFeedbackStatus, 'Please enter your feedback.', 'error'); return; }
@@ -828,7 +838,7 @@ spFeedbackSend.addEventListener('click', async () => {
       setFormStatus(spFeedbackStatus, 'Please enter a valid email address.', 'error');
       return;
     }
-    const diagnostics = { version: appVersion.textContent || null, theme: currentTheme, armed: deskoyArmed };
+    const diagnostics = await collectDiagnostics();
     const res = await window.deskoy.sendFeedback({ message: text, email: email || undefined, diagnostics });
     if (res.ok) {
       setFormStatus(spFeedbackStatus, 'Sent! Thank you.', 'ok');
@@ -886,7 +896,7 @@ spBugSend.addEventListener('click', async () => {
     }
     const steps = spBugSteps.value.trim();
     const diagnostics = includeDiagnostics
-      ? { version: appVersion.textContent || null, theme: currentTheme, armed: deskoyArmed }
+      ? await collectDiagnostics()
       : undefined;
     const res = await window.deskoy.sendBugReport({
       message: text,

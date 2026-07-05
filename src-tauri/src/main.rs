@@ -19,6 +19,7 @@ use tauri::{
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
 };
+use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 #[cfg(windows)]
@@ -165,6 +166,9 @@ struct DeskoyApp {
 const FEEDBACK_BUG_COOLDOWN_MS: u128 = 5 * 60 * 60 * 1000;
 const UPDATES_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const VERSION_POLICY_POLL: Duration = Duration::from_secs(6 * 60 * 60);
+const DEFAULT_UPDATER_URL: &str =
+    "https://github.com/deskoys/deskoy/releases/latest/download/latest.json";
+const DEFAULT_UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzRTBFMzk4QTVBMUM3ODUKUldTRng2R2xtT1BnUTlwRXY2Z3EyUTl6ZjlJcThiL3FzbkxsaWNibDljWUsxSzVSbE5tZyt3R3IK";
 const AUTO_COVER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BLOCKED_COVER_COOLDOWN: Duration = Duration::from_secs(6);
 const BLOCKED_WINDOW_SETTLE_POLL: Duration = Duration::from_millis(25);
@@ -239,6 +243,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -266,6 +271,14 @@ fn main() {
             let _ = register_hotkeys(app.handle(), &get_settings_from_state(app.handle()));
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             open_external,
             get_app_version,
@@ -275,6 +288,8 @@ fn main() {
             get_settings,
             get_protection_logs,
             clear_protection_logs,
+            check_app_update,
+            install_app_update,
             save_settings,
             pick_cover_file,
             send_feedback,
@@ -607,6 +622,7 @@ fn show_main_window(app: &AppHandle) {
         let _ = win.unminimize();
         let _ = win.set_focus();
     }
+    emit_state(app);
 }
 
 fn handle_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
@@ -2206,6 +2222,11 @@ async fn toggle(app: AppHandle) -> Value {
     let next_enabled = !prev.enabled;
     if !next_enabled {
         close_cover_session(&app).await;
+    } else {
+        let state = app_state(&app);
+        let mut rt = state.state.lock().unwrap();
+        rt.paused_until = None;
+        rt.paused_until_restart = false;
     }
     let next = set_settings_in_state(&app, json!({ "enabled": next_enabled }));
     if !register_hotkeys(&app, &next) {
@@ -2215,8 +2236,9 @@ async fn toggle(app: AppHandle) -> Value {
         show_main_window(&app);
         return json!({ "ok": false, "active": false, "error": "hotkey_unavailable" });
     }
+    let active = effective_enabled(&app);
     emit_state(&app);
-    json!({ "ok": true, "active": next_enabled })
+    json!({ "ok": true, "active": active })
 }
 
 #[tauri::command]
@@ -2453,6 +2475,141 @@ async fn get_updates(app: AppHandle) -> Value {
     }
 }
 
+fn updater_public_key() -> Option<String> {
+    std::env::var("DESKOY_UPDATER_PUBKEY")
+        .ok()
+        .or_else(|| option_env!("DESKOY_UPDATER_PUBKEY").map(str::to_string))
+        .or_else(|| Some(DEFAULT_UPDATER_PUBKEY.into()))
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+}
+
+fn updater_endpoint() -> String {
+    std::env::var("DESKOY_UPDATER_URL")
+        .ok()
+        .or_else(|| option_env!("DESKOY_UPDATER_URL").map(str::to_string))
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| DEFAULT_UPDATER_URL.into())
+}
+
+fn updater_builder(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuilder, String> {
+    let Some(pubkey) = updater_public_key() else {
+        return Err("updater_not_configured".into());
+    };
+    let endpoint = Url::parse(&updater_endpoint()).map_err(|_| "updater_bad_endpoint".to_string())?;
+    app.updater_builder()
+        .pubkey(pubkey)
+        .endpoints(vec![endpoint])
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Value {
+    let updater = match updater_builder(&app).and_then(|builder| {
+        builder
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|err| err.to_string())
+    }) {
+        Ok(updater) => updater,
+        Err(error) => {
+            return json!({
+                "ok": true,
+                "configured": false,
+                "available": false,
+                "error": error
+            });
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => json!({
+            "ok": true,
+            "configured": true,
+            "available": true,
+            "version": update.version,
+            "currentVersion": update.current_version,
+            "notes": update.body.unwrap_or_default(),
+            "url": update.download_url.as_str()
+        }),
+        Ok(None) => json!({
+            "ok": true,
+            "configured": true,
+            "available": false
+        }),
+        Err(err) => json!({
+            "ok": false,
+            "configured": true,
+            "available": false,
+            "error": err.to_string()
+        }),
+    }
+}
+
+#[tauri::command]
+async fn install_app_update(app: AppHandle) -> Value {
+    let updater = match updater_builder(&app).and_then(|builder| {
+        builder
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|err| err.to_string())
+    }) {
+        Ok(updater) => updater,
+        Err(error) => {
+            return json!({ "ok": false, "error": error });
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => return json!({ "ok": false, "error": "update_unavailable" }),
+        Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+    };
+    close_cover_session(&app).await;
+    let _ = app.emit(
+        "deskoy:updateProgress",
+        json!({ "event": "started", "downloaded": 0 }),
+    );
+    let downloaded = Arc::new(Mutex::new(0_u64));
+    let app_progress = app.clone();
+    let downloaded_progress = downloaded.clone();
+    let result = update
+        .download_and_install(
+            move |chunk_length, content_length| {
+                let mut total = downloaded_progress.lock().unwrap();
+                *total += chunk_length as u64;
+                let _ = app_progress.emit(
+                    "deskoy:updateProgress",
+                    json!({
+                        "event": "progress",
+                        "downloaded": *total,
+                        "total": content_length
+                    }),
+                );
+            },
+            {
+                let app = app.clone();
+                move || {
+                    let _ = app.emit("deskoy:updateProgress", json!({ "event": "finished" }));
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(()) => {
+            let _ = app.emit("deskoy:updateProgress", json!({ "event": "installed" }));
+            json!({ "ok": true })
+        }
+        Err(err) => {
+            let error = err.to_string();
+            let _ = app.emit(
+                "deskoy:updateProgress",
+                json!({ "event": "error", "error": error }),
+            );
+            json!({ "ok": false, "error": error })
+        }
+    }
+}
+
 #[tauri::command]
 async fn window_minimize(app: AppHandle) -> Value {
     if let Some(win) = app.get_webview_window("main") {
@@ -2464,7 +2621,9 @@ async fn window_minimize(app: AppHandle) -> Value {
 #[tauri::command]
 async fn window_close(app: AppHandle) -> Value {
     if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
+        if win.hide().is_err() {
+            let _ = win.minimize();
+        }
     }
     json!({ "ok": true })
 }

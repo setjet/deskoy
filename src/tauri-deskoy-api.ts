@@ -17,6 +17,8 @@ window.deskoy = {
   openExternal: (url: string) => invoke('open_external', { url }),
   getAppVersion: () => invoke('get_app_version'),
   getUpdates: () => invoke('get_updates'),
+  checkAppUpdate: () => invoke('check_app_update'),
+  installAppUpdate: () => invoke('install_app_update'),
   getState: () => invoke('get_state'),
   toggle: () => invoke('toggle'),
   getSettings: () => invoke('get_settings'),
@@ -33,6 +35,7 @@ window.deskoy = {
   windowMinimize: () => invoke('window_minimize'),
   windowClose: () => invoke('window_close'),
   onStateChanged: (cb) => onEvent('deskoy:stateChanged', cb),
+  onUpdateProgress: (cb) => onEvent('deskoy:updateProgress', cb),
   onCoverFallback: (cb) => onEvent('deskoy:coverFallback', cb),
   onUpgradeRequired: (cb) => onEvent('deskoy:upgradeRequired', cb),
 };

@@ -6,6 +6,17 @@ declare global {
       openExternal: (url: string) => Promise<{ ok: boolean }>;
       getAppVersion: () => Promise<{ version: string; name: string }>;
       getUpdates: () => Promise<{ ok: boolean; data?: unknown; error?: string }>;
+      checkAppUpdate: () => Promise<{
+        ok: boolean;
+        configured: boolean;
+        available: boolean;
+        version?: string;
+        currentVersion?: string;
+        notes?: string;
+        url?: string;
+        error?: string;
+      }>;
+      installAppUpdate: () => Promise<{ ok: boolean; error?: string }>;
       getState: () => Promise<{ active: boolean; maximized: boolean; paused?: boolean }>;
       toggle: () => Promise<{ active: boolean; ok: boolean; error?: string }>;
       getSettings: () => Promise<{
@@ -71,6 +82,14 @@ declare global {
       windowMinimize: () => Promise<{ ok: boolean }>;
       windowClose: () => Promise<{ ok: boolean }>;
       onStateChanged: (cb: (state: { active: boolean; paused?: boolean }) => void) => () => void;
+      onUpdateProgress: (
+        cb: (event: {
+          event: 'started' | 'progress' | 'finished' | 'installed' | 'error';
+          downloaded?: number;
+          total?: number;
+          error?: string;
+        }) => void,
+      ) => () => void;
       onCoverFallback: (cb: (info: { reason: string }) => void) => () => void;
       onUpgradeRequired: (cb: (payload: { message: string; downloadUrl: string; minimumVersion?: string }) => void) => () => void;
     };

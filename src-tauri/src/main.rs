@@ -14,7 +14,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, Monitor, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
@@ -122,14 +122,21 @@ struct ActiveWindowInfo {
 #[derive(Default)]
 struct RuntimeState {
     registered_hotkey: Option<Shortcut>,
+    registered_escape: Option<Shortcut>,
     cover_open: bool,
     cover_busy: bool,
     cover_session: Option<CoverSession>,
     cover_open_at: Option<Instant>,
+    cover_labels: Vec<String>,
     last_blocked_cover_at: Option<Instant>,
     last_blocked_hwnd: i64,
     last_blocked_pid: u32,
     last_blocked_process_name: String,
+    paused_until: Option<Instant>,
+    paused_until_restart: bool,
+    last_cover_error: String,
+    last_cover_fallback: String,
+    last_auto_protect_reason: String,
     pending_audio_restore: Option<PendingAudioRestore>,
     updates_cache: Option<(Instant, Value)>,
     upgrade_block: Option<UpgradeBlock>,
@@ -163,6 +170,7 @@ const BLOCKED_COVER_COOLDOWN: Duration = Duration::from_secs(6);
 const BLOCKED_WINDOW_SETTLE_POLL: Duration = Duration::from_millis(25);
 const COVER_BEFORE_HIDE_DELAY: Duration = Duration::from_millis(300);
 const COVER_MIN_VISIBLE: Duration = Duration::from_millis(700);
+const COVER_WATCHDOG_INTERVAL: Duration = Duration::from_millis(700);
 const PROTECTION_LOG_LIMIT: usize = 30;
 
 fn main() {
@@ -189,6 +197,7 @@ fn main() {
             app.manage(app_state.clone());
             install_tray(app)?;
             start_auto_cover_watcher(app.handle().clone());
+            start_cover_watchdog(app.handle().clone());
             start_version_policy_watcher(app.handle().clone());
             let _ = register_hotkeys(app.handle(), &get_settings_from_state(app.handle()));
             Ok(())
@@ -206,6 +215,10 @@ fn main() {
             pick_cover_file,
             send_feedback,
             send_bug_report,
+            get_diagnostics,
+            pause_for_minutes,
+            pause_until_restart,
+            resume_deskoy,
             window_minimize,
             window_close,
             close_cover
@@ -282,6 +295,9 @@ fn clear_protection_logs_from_store(app: &AppHandle) {
 fn report_runtime_error(app: &AppHandle, area: &str, error: impl Into<String>) {
     let error = error.into();
     eprintln!("[deskoy:{area}] {error}");
+    if area == "cover" || area == "watchdog" || area == "hotkey" {
+        app_state(app).state.lock().unwrap().last_cover_error = format!("{area}: {error}");
+    }
     let _ = app.emit("deskoy:runtimeError", json!({ "area": area, "error": error }));
 }
 
@@ -360,13 +376,102 @@ fn set_settings_in_state(app: &AppHandle, patch: Value) -> DeskoySettings {
 fn emit_state(app: &AppHandle) {
     let _ = app.emit(
         "deskoy:stateChanged",
-        json!({ "active": get_settings_from_state(app).enabled }),
+        json!({ "active": effective_enabled(app), "paused": is_paused(app) }),
     );
+}
+
+fn is_pause_active(rt: &RuntimeState) -> bool {
+    rt.paused_until_restart
+        || rt
+            .paused_until
+            .map(|until| until > Instant::now())
+            .unwrap_or(false)
+}
+
+fn is_paused(app: &AppHandle) -> bool {
+    let state = app_state(app);
+    let rt = state.state.lock().unwrap();
+    is_pause_active(&rt)
+}
+
+fn effective_enabled(app: &AppHandle) -> bool {
+    get_settings_from_state(app).enabled && !is_paused(app)
+}
+
+fn pause_label(app: &AppHandle) -> Value {
+    let state = app_state(app);
+    let rt = state.state.lock().unwrap();
+    if rt.paused_until_restart {
+        json!({ "active": true, "mode": "restart" })
+    } else if let Some(until) = rt.paused_until {
+        if until > Instant::now() {
+            json!({
+                "active": true,
+                "mode": "timer",
+                "remainingMs": until.duration_since(Instant::now()).as_millis()
+            })
+        } else {
+            json!({ "active": false })
+        }
+    } else {
+        json!({ "active": false })
+    }
+}
+
+fn set_pause_until(app: &AppHandle, until: Option<Instant>, until_restart: bool) {
+    {
+        let state = app_state(app);
+        let mut rt = state.state.lock().unwrap();
+        rt.paused_until = until;
+        rt.paused_until_restart = until_restart;
+    }
+    let _ = register_hotkeys(app, &get_settings_from_state(app));
+    emit_state(app);
+}
+
+async fn pause_for_duration(app: AppHandle, duration: Duration) -> Value {
+    close_cover_session(&app).await;
+    let until = Instant::now() + duration;
+    set_pause_until(&app, Some(until), false);
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(duration).await;
+        let should_resume = {
+            let state = app_state(&app2);
+            let rt = state.state.lock().unwrap();
+            !rt.paused_until_restart
+                && rt
+                    .paused_until
+                    .map(|stored| stored <= Instant::now())
+                    .unwrap_or(false)
+        };
+        if should_resume {
+            set_pause_until(&app2, None, false);
+        }
+    });
+    json!({ "ok": true, "paused": pause_label(&app) })
+}
+
+async fn pause_until_restart_inner(app: AppHandle) -> Value {
+    close_cover_session(&app).await;
+    set_pause_until(&app, None, true);
+    json!({ "ok": true, "paused": pause_label(&app) })
+}
+
+fn resume_deskoy_inner(app: &AppHandle) -> Value {
+    set_pause_until(app, None, false);
+    json!({ "ok": true, "active": effective_enabled(app) })
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Settings", true, None::<&str>)?;
     let toggle_item = MenuItem::with_id(app, "toggle", "Toggle Deskoy", true, None::<&str>)?;
+    let pause_5 = MenuItem::with_id(app, "pause_5", "Pause for 5 minutes", true, None::<&str>)?;
+    let pause_15 = MenuItem::with_id(app, "pause_15", "Pause for 15 minutes", true, None::<&str>)?;
+    let pause_30 = MenuItem::with_id(app, "pause_30", "Pause for 30 minutes", true, None::<&str>)?;
+    let pause_restart =
+        MenuItem::with_id(app, "pause_restart", "Pause until restart", true, None::<&str>)?;
+    let resume = MenuItem::with_id(app, "resume", "Resume Deskoy", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -374,6 +479,12 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &open,
             &PredefinedMenuItem::separator(app)?,
             &toggle_item,
+            &PredefinedMenuItem::separator(app)?,
+            &pause_5,
+            &pause_15,
+            &pause_30,
+            &pause_restart,
+            &resume,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -388,6 +499,33 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 tauri::async_runtime::spawn(async move {
                     let _ = toggle(app).await;
                 });
+            }
+            "pause_5" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = pause_for_duration(app, Duration::from_secs(5 * 60)).await;
+                });
+            }
+            "pause_15" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = pause_for_duration(app, Duration::from_secs(15 * 60)).await;
+                });
+            }
+            "pause_30" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = pause_for_duration(app, Duration::from_secs(30 * 60)).await;
+                });
+            }
+            "pause_restart" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = pause_until_restart_inner(app).await;
+                });
+            }
+            "resume" => {
+                let _ = resume_deskoy_inner(app);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -419,7 +557,10 @@ fn handle_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEv
                 .as_ref()
                 .map(|hk| hk == shortcut)
                 .unwrap_or(false),
-            false,
+            rt.registered_escape
+                .as_ref()
+                .map(|hk| hk == shortcut)
+                .unwrap_or(false),
         )
     };
     if should_toggle {
@@ -514,13 +655,32 @@ fn code_from_key(key: &str) -> Option<Code> {
     }
 }
 
+fn escape_shortcut() -> Shortcut {
+    Shortcut::new(None, Code::Escape)
+}
+
 fn register_hotkeys(app: &AppHandle, settings: &DeskoySettings) -> bool {
     let state = app_state(app);
     let mut rt = state.state.lock().unwrap();
     if let Some(old) = rt.registered_hotkey.take() {
         let _ = app.global_shortcut().unregister(old);
     }
-    if !settings.enabled || settings.hotkey.trim().is_empty() {
+    if let Some(old) = rt.registered_escape.take() {
+        let _ = app.global_shortcut().unregister(old);
+    }
+    if !settings.enabled || is_pause_active(&rt) {
+        return true;
+    }
+    let escape = escape_shortcut();
+    match app.global_shortcut().register(escape) {
+        Ok(()) => {
+            rt.registered_escape = Some(escape);
+        }
+        Err(err) => {
+            rt.last_cover_error = format!("hotkey: failed to register Escape: {err}");
+        }
+    }
+    if settings.hotkey.trim().is_empty() {
         return true;
     }
     let Some(hotkey) = parse_hotkey(&settings.hotkey) else {
@@ -535,7 +695,7 @@ fn register_hotkeys(app: &AppHandle, settings: &DeskoySettings) -> bool {
 }
 
 async fn toggle_cover_via_hotkey(app: AppHandle) {
-    if !get_settings_from_state(&app).enabled {
+    if !effective_enabled(&app) {
         return;
     }
     let should_open = {
@@ -586,70 +746,37 @@ async fn toggle_cover_via_hotkey(app: AppHandle) {
 }
 
 async fn open_cover_from_settings(app: &AppHandle, settings: &DeskoySettings) -> bool {
-    if app.get_webview_window("cover").is_some() {
+    if cover_window_exists(app) {
         return true;
     }
-    let url = cover_webview_url(settings);
-    let builder = WebviewWindowBuilder::new(app, "cover", url)
-        .title("Cover")
-        .fullscreen(true)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .background_color(tauri::utils::config::Color(0, 0, 0, 255));
-    match builder.build() {
-        Ok(win) => {
-            if let Err(err) = win.show() {
-                report_runtime_error(app, "cover", format!("failed to show cover: {err}"));
-            }
-            if let Err(err) = win.set_focus() {
-                report_runtime_error(app, "cover", format!("failed to focus cover: {err}"));
-            }
-            app_state(app).state.lock().unwrap().cover_open_at = Some(Instant::now());
+    match open_cover_windows(app, settings, false) {
+        Ok(labels) if !labels.is_empty() => {
+            let state = app_state(app);
+            let mut rt = state.state.lock().unwrap();
+            rt.cover_labels = labels;
+            rt.cover_open_at = Some(Instant::now());
             true
         }
+        Ok(_) => false,
         Err(err) => {
-            report_runtime_error(app, "cover", format!("failed to build cover: {err}"));
-            match
-                WebviewWindowBuilder::new(app, "cover", WebviewUrl::App("cover/excel.html".into()))
-                    .title("Cover")
-                    .fullscreen(true)
-                    .decorations(false)
-                    .always_on_top(true)
-                    .skip_taskbar(true)
-                    .visible(false)
-                    .background_color(tauri::utils::config::Color(0, 0, 0, 255))
-                    .build()
-            {
-                Ok(win) => {
-                    if let Err(err) = win.show() {
-                        report_runtime_error(
-                            app,
-                            "cover",
-                            format!("failed to show fallback cover: {err}"),
-                        );
+            report_runtime_error(app, "cover", err);
+            close_cover_window(app);
+            match open_cover_windows(app, settings, true) {
+                Ok(labels) if !labels.is_empty() => {
+                    let reason = "Cover failed, using black fallback.";
+                    {
+                        let state = app_state(app);
+                        let mut rt = state.state.lock().unwrap();
+                        rt.cover_labels = labels;
+                        rt.cover_open_at = Some(Instant::now());
+                        rt.last_cover_fallback = reason.into();
                     }
-                    if let Err(err) = win.set_focus() {
-                        report_runtime_error(
-                            app,
-                            "cover",
-                            format!("failed to focus fallback cover: {err}"),
-                        );
-                    }
-                    let _ = app.emit(
-                        "deskoy:coverFallback",
-                        json!({ "reason": "Cover failed, using Excel fallback." }),
-                    );
-                    app_state(app).state.lock().unwrap().cover_open_at = Some(Instant::now());
+                    let _ = app.emit("deskoy:coverFallback", json!({ "reason": reason }));
                     true
                 }
+                Ok(_) => false,
                 Err(err) => {
-                    report_runtime_error(
-                        app,
-                        "cover",
-                        format!("failed to build fallback cover: {err}"),
-                    );
+                    report_runtime_error(app, "cover", format!("failed to build black fallback: {err}"));
                     false
                 }
             }
@@ -657,7 +784,116 @@ async fn open_cover_from_settings(app: &AppHandle, settings: &DeskoySettings) ->
     }
 }
 
-fn cover_webview_url(settings: &DeskoySettings) -> WebviewUrl {
+fn cover_window_label(index: usize) -> String {
+    if index == 0 {
+        "cover".into()
+    } else {
+        format!("cover-{index}")
+    }
+}
+
+fn known_cover_labels(app: &AppHandle) -> Vec<String> {
+    let mut labels = app_state(app).state.lock().unwrap().cover_labels.clone();
+    if labels.is_empty() {
+        labels.push("cover".into());
+    }
+    for index in 1..16 {
+        let label = cover_window_label(index);
+        if app.get_webview_window(&label).is_some() && !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
+fn cover_window_exists(app: &AppHandle) -> bool {
+    known_cover_labels(app)
+        .iter()
+        .any(|label| app.get_webview_window(label).is_some())
+}
+
+fn open_cover_windows(
+    app: &AppHandle,
+    settings: &DeskoySettings,
+    force_blank: bool,
+) -> Result<Vec<String>, String> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let mut labels = Vec::new();
+    if monitors.is_empty() {
+        labels.push(build_cover_window(app, "cover", settings, force_blank, None, true)?);
+        return Ok(labels);
+    }
+    for (index, monitor) in monitors.iter().enumerate() {
+        let label = cover_window_label(index);
+        match build_cover_window(app, &label, settings, force_blank, Some(monitor), index == 0) {
+            Ok(label) => labels.push(label),
+            Err(err) => {
+                for label in labels {
+                    if let Some(win) = app.get_webview_window(&label) {
+                        let _ = win.close();
+                    }
+                }
+                return Err(err);
+            }
+        }
+    }
+    Ok(labels)
+}
+
+fn build_cover_window(
+    app: &AppHandle,
+    label: &str,
+    settings: &DeskoySettings,
+    force_blank: bool,
+    monitor: Option<&Monitor>,
+    focus: bool,
+) -> Result<String, String> {
+    let mut builder = WebviewWindowBuilder::new(app, label, cover_webview_url(settings, force_blank))
+        .title("Cover")
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .focused(false)
+        .background_color(tauri::utils::config::Color(0, 0, 0, 255));
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor().max(1.0);
+        let position = monitor.position();
+        let size = monitor.size();
+        builder = builder
+            .position(position.x as f64 / scale, position.y as f64 / scale)
+            .inner_size(size.width as f64 / scale, size.height as f64 / scale);
+    } else {
+        builder = builder.fullscreen(true);
+    }
+    let win = builder
+        .build()
+        .map_err(|err| format!("failed to build cover window {label}: {err}"))?;
+    if let Err(err) = win.set_fullscreen(true) {
+        report_runtime_error(app, "cover", format!("failed to fullscreen cover {label}: {err}"));
+    }
+    win.show()
+        .map_err(|err| format!("failed to show cover window {label}: {err}"))?;
+    if let Err(err) = win.set_always_on_top(true) {
+        report_runtime_error(app, "cover", format!("failed to pin cover {label}: {err}"));
+    }
+    if focus {
+        if let Err(err) = win.set_focus() {
+            report_runtime_error(app, "cover", format!("failed to focus cover {label}: {err}"));
+        }
+    }
+    Ok(label.to_string())
+}
+
+fn cover_webview_url(settings: &DeskoySettings, force_blank: bool) -> WebviewUrl {
+    if force_blank || settings.cover_mode == "black" {
+        return WebviewUrl::External(
+            Url::parse(
+                "data:text/html,<html><body style='margin:0;background:%23000'></body></html>",
+            )
+            .unwrap(),
+        );
+    }
     if settings.cover_mode == "url" {
         if let Ok(url) = Url::parse(settings.cover_url.trim()) {
             return WebviewUrl::External(url);
@@ -667,14 +903,6 @@ fn cover_webview_url(settings: &DeskoySettings) -> WebviewUrl {
         if let Ok(url) = Url::from_file_path(settings.cover_file_path.trim()) {
             return WebviewUrl::External(url);
         }
-    }
-    if settings.cover_mode == "black" {
-        return WebviewUrl::External(
-            Url::parse(
-                "data:text/html,<html><body style='margin:0;background:%23000'></body></html>",
-            )
-            .unwrap(),
-        );
     }
     let kind = if is_cover_kind(&settings.cover_mode) {
         settings.cover_mode.as_str()
@@ -696,11 +924,14 @@ fn is_cover_kind(mode: &str) -> bool {
 }
 
 fn close_cover_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("cover") {
-        if let Err(err) = win.close() {
-            report_runtime_error(app, "cover", format!("failed to close cover: {err}"));
+    for label in known_cover_labels(app) {
+        if let Some(win) = app.get_webview_window(&label) {
+            if let Err(err) = win.close() {
+                report_runtime_error(app, "cover", format!("failed to close {label}: {err}"));
+            }
         }
     }
+    app_state(app).state.lock().unwrap().cover_labels.clear();
 }
 
 async fn close_cover_session(app: &AppHandle) {
@@ -724,6 +955,7 @@ async fn close_cover_session(app: &AppHandle) {
         }
         rt.cover_open = false;
         rt.cover_open_at = None;
+        rt.cover_labels.clear();
         rt.cover_session = None;
     }
     close_cover_window(app);
@@ -733,7 +965,7 @@ async fn close_cover_session(app: &AppHandle) {
 
 async fn open_cover_if_allowed(app: AppHandle, trigger: Option<ActiveWindowInfo>) {
     let settings = get_settings_from_state(&app);
-    if !settings.enabled {
+    if !settings.enabled || is_paused(&app) {
         return;
     }
     {
@@ -837,11 +1069,100 @@ async fn open_cover_if_allowed(app: AppHandle, trigger: Option<ActiveWindowInfo>
     }
 }
 
+fn start_cover_watchdog(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(COVER_WATCHDOG_INTERVAL).await;
+            let labels = {
+                let state = app_state(&app);
+                let rt = state.state.lock().unwrap();
+                if !rt.cover_open || rt.cover_busy {
+                    continue;
+                }
+                rt.cover_labels.clone()
+            };
+            if labels.is_empty() {
+                recover_cover_from_watchdog(&app, "Cover watchdog found no cover windows.").await;
+                continue;
+            }
+            let mut needs_recovery = false;
+            for label in &labels {
+                let Some(win) = app.get_webview_window(label) else {
+                    needs_recovery = true;
+                    break;
+                };
+                match win.is_visible() {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => {
+                        needs_recovery = true;
+                        break;
+                    }
+                }
+                if let Err(err) = win.set_always_on_top(true) {
+                    report_runtime_error(
+                        &app,
+                        "watchdog",
+                        format!("failed to re-pin {label}: {err}"),
+                    );
+                }
+            }
+            if needs_recovery {
+                recover_cover_from_watchdog(&app, "Cover watchdog restored black fallback.").await;
+            }
+        }
+    });
+}
+
+async fn recover_cover_from_watchdog(app: &AppHandle, reason: &str) {
+    {
+        let state = app_state(app);
+        let mut rt = state.state.lock().unwrap();
+        if rt.cover_busy {
+            return;
+        }
+        rt.cover_busy = true;
+        rt.last_cover_error = reason.into();
+    }
+    close_cover_window(app);
+    let settings = get_settings_from_state(app);
+    match open_cover_windows(app, &settings, true) {
+        Ok(labels) if !labels.is_empty() => {
+            {
+                let state = app_state(app);
+                let mut rt = state.state.lock().unwrap();
+                rt.cover_open = true;
+                rt.cover_labels = labels;
+                rt.cover_open_at = Some(Instant::now());
+                rt.cover_busy = false;
+                rt.last_cover_fallback = reason.into();
+            }
+            let _ = app.emit("deskoy:coverFallback", json!({ "reason": reason }));
+        }
+        Ok(_) => {
+            let state = app_state(app);
+            let mut rt = state.state.lock().unwrap();
+            rt.cover_open = false;
+            rt.cover_open_at = None;
+            rt.cover_busy = false;
+            rt.cover_labels.clear();
+        }
+        Err(err) => {
+            report_runtime_error(app, "watchdog", err);
+            let state = app_state(app);
+            let mut rt = state.state.lock().unwrap();
+            rt.cover_open = false;
+            rt.cover_open_at = None;
+            rt.cover_busy = false;
+            rt.cover_labels.clear();
+        }
+    }
+}
+
 fn start_auto_cover_watcher(app: AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(AUTO_COVER_POLL_INTERVAL);
         let s = get_settings_from_state(&app);
-        if !s.enabled || !s.auto_cover_blocked {
+        if !s.enabled || is_paused(&app) || !s.auto_cover_blocked {
             continue;
         }
         {
@@ -861,9 +1182,10 @@ fn start_auto_cover_watcher(app: AppHandle) {
             }
         }
         if let Some(info) = get_active_window_info() {
-            if is_deskoy_window(&info) || !is_blocked_app(&info, &s) {
+            let Some(reason) = blocked_app_reason(&info, &s) else {
                 continue;
-            }
+            };
+            app_state(&app).state.lock().unwrap().last_auto_protect_reason = reason;
             let app2 = app.clone();
             tauri::async_runtime::spawn(async move {
                 open_cover_if_allowed(app2, Some(info)).await;
@@ -876,29 +1198,111 @@ fn is_deskoy_window(info: &ActiveWindowInfo) -> bool {
     info.process_name.to_lowercase().contains("deskoy")
 }
 
-fn matches_any(process_name: &str, list: &[String]) -> bool {
-    let p = process_name.to_lowercase();
-    list.iter().any(|x| p.contains(&x.to_lowercase()))
-}
-
-fn is_blocked_app(info: &ActiveWindowInfo, settings: &DeskoySettings) -> bool {
-    if is_deskoy_window(info) {
-        return false;
+fn blocked_app_reason(info: &ActiveWindowInfo, settings: &DeskoySettings) -> Option<String> {
+    if is_deskoy_window(info) || is_whitelisted_process(&info.process_name, &settings.whitelist) {
+        return None;
     }
-    if matches_any(&info.process_name, &settings.blocked_apps) {
-        return true;
+    if let Some(rule) = settings
+        .blocked_apps
+        .iter()
+        .find(|rule| process_rule_matches(&info.process_name, rule))
+    {
+        return Some(format!("app rule matched: {rule}"));
     }
-    if settings
+    if let Some(rule) = settings
         .blocked_websites
         .iter()
-        .any(|rule| website_rule_matches_title(&info.title, rule))
+        .find(|rule| website_rule_matches_window(info, rule))
     {
-        return true;
+        return Some(format!("website rule matched: {rule}"));
     }
     settings
         .blocked_title_keywords
         .iter()
-        .any(|rule| blocked_title_rule_matches(&info.title, rule))
+        .find(|rule| blocked_title_rule_matches(&info.title, rule))
+        .map(|rule| format!("title keyword matched: {rule}"))
+}
+
+fn is_whitelisted_process(process_name: &str, whitelist: &[String]) -> bool {
+    whitelist
+        .iter()
+        .any(|rule| process_rule_matches(process_name, rule))
+}
+
+fn process_rule_matches(process_name: &str, raw_rule: &str) -> bool {
+    let process = normalize_process_identifier(process_name);
+    let rule = normalize_process_identifier(raw_rule);
+    if rule.is_empty() || process.is_empty() {
+        return false;
+    }
+    if process.eq_ignore_ascii_case(&rule) {
+        return true;
+    }
+
+    let process_tokens = identifier_tokens(&process);
+    let rule_tokens = identifier_tokens(&rule);
+    !rule_tokens.is_empty() && contains_token_sequence(&process_tokens, &rule_tokens)
+}
+
+fn normalize_process_identifier(value: &str) -> String {
+    let value = value.trim().trim_matches('"').trim_matches('\'');
+    let file_name = value
+        .rsplit(&['\\', '/'][..])
+        .next()
+        .unwrap_or(value)
+        .trim();
+    strip_case_insensitive_suffix(file_name, ".exe")
+        .trim()
+        .to_string()
+}
+
+fn strip_case_insensitive_suffix<'a>(value: &'a str, suffix: &str) -> &'a str {
+    if value.to_ascii_lowercase().ends_with(suffix) {
+        &value[..value.len() - suffix.len()]
+    } else {
+        value
+    }
+}
+
+fn identifier_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower_or_digit = false;
+    let chars: Vec<char> = value.chars().collect();
+
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if ch.is_ascii_alphanumeric() {
+            let next_is_lower = chars
+                .get(index + 1)
+                .map(|next| next.is_ascii_lowercase())
+                .unwrap_or(false);
+            if ch.is_ascii_uppercase()
+                && !current.is_empty()
+                && (prev_lower_or_digit || next_is_lower)
+            {
+                tokens.push(current.to_lowercase());
+                current.clear();
+            }
+            current.push(ch.to_ascii_lowercase());
+            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            prev_lower_or_digit = false;
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn contains_token_sequence(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|window| window == needle)
 }
 
 fn website_rule_matches_title(title: &str, raw_rule: &str) -> bool {
@@ -908,16 +1312,144 @@ fn website_rule_matches_title(title: &str, raw_rule: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn website_rule_matches_window(info: &ActiveWindowInfo, raw_rule: &str) -> bool {
+    let rule = normalize_blocked_rule(raw_rule);
+    let Some(host) = hostname_from_rule(&rule) else {
+        return false;
+    };
+    if is_browser_process(&info.process_name) {
+        title_contains_hostname(&info.title, &host)
+            || browser_title_matches_host(&info.title, &info.process_name, &host)
+    } else {
+        title_contains_explicit_url_hostname(&info.title, &host)
+    }
+}
+
+fn is_browser_process(process_name: &str) -> bool {
+    let compact = identifier_tokens(&normalize_process_identifier(process_name)).join("");
+    matches!(
+        compact.as_str(),
+        "arc"
+            | "brave"
+            | "bravebrowser"
+            | "chrome"
+            | "chromium"
+            | "duckduckgo"
+            | "firefox"
+            | "iexplore"
+            | "librewolf"
+            | "msedge"
+            | "opera"
+            | "operagx"
+            | "torbrowser"
+            | "vivaldi"
+            | "waterfox"
+            | "zen"
+    )
+}
+
 fn blocked_title_rule_matches(title: &str, raw_rule: &str) -> bool {
     let rule = normalize_blocked_rule(raw_rule);
     if rule.is_empty() {
         return false;
     }
+    if hostname_from_rule(&rule).is_some() {
+        return website_rule_matches_title(title, &rule);
+    }
 
     let title = title.to_lowercase();
     expand_keyword_rule(&rule)
         .iter()
-        .any(|needle| title.contains(needle))
+        .any(|needle| contains_bounded_phrase(&title, needle))
+}
+
+fn browser_title_matches_host(title: &str, process_name: &str, host: &str) -> bool {
+    if !is_browser_process(process_name) {
+        return false;
+    }
+    let title = browser_page_title(title).to_lowercase();
+    host_title_phrases(host)
+        .iter()
+        .any(|phrase| contains_bounded_phrase(&title, phrase))
+}
+
+fn browser_page_title(title: &str) -> String {
+    let mut page_title = title.trim();
+    loop {
+        let mut trimmed = false;
+        for separator in [" - ", " — ", " – "] {
+            if let Some((before, suffix)) = page_title.rsplit_once(separator) {
+                if is_browser_title_suffix(suffix) {
+                    page_title = before.trim();
+                    trimmed = true;
+                    break;
+                }
+            }
+        }
+        if !trimmed {
+            break;
+        }
+    }
+    page_title.to_string()
+}
+
+fn is_browser_title_suffix(value: &str) -> bool {
+    let suffix = identifier_tokens(value).join("");
+    matches!(
+        suffix.as_str(),
+        "arc"
+            | "brave"
+            | "bravebrowser"
+            | "chrome"
+            | "chromium"
+            | "duckduckgo"
+            | "firefox"
+            | "googlechrome"
+            | "internetexplorer"
+            | "librewolf"
+            | "microsoftedge"
+            | "mozillafirefox"
+            | "opera"
+            | "operagx"
+            | "torbrowser"
+            | "vivaldi"
+            | "waterfox"
+            | "zen"
+            | "zenbrowser"
+    )
+}
+
+fn host_title_phrases(host: &str) -> Vec<String> {
+    let host = strip_www(host);
+    let parts: Vec<&str> = host.split('.').filter(|part| !part.is_empty()).collect();
+    if parts.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut phrases = Vec::new();
+    let registrable = parts[parts.len().saturating_sub(2)];
+    if is_meaningful_host_label(registrable) {
+        phrases.push(registrable.replace('-', " "));
+    }
+
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        if is_meaningful_host_label(part) {
+            phrases.push(part.replace('-', " "));
+        }
+    }
+
+    phrases.sort();
+    phrases.dedup();
+    phrases
+}
+
+fn is_meaningful_host_label(label: &str) -> bool {
+    !matches!(
+        label,
+        "ac" | "accounts" | "app" | "apps" | "auth" | "cdn" | "co" | "com" | "edu" | "gov"
+            | "io" | "login" | "m" | "mail" | "mobile" | "net" | "org" | "secure"
+            | "signin" | "www" | "www2"
+    )
 }
 
 fn normalize_blocked_rule(raw: &str) -> String {
@@ -968,6 +1500,22 @@ fn strip_www(host: &str) -> &str {
 
 fn title_contains_hostname(title: &str, host: &str) -> bool {
     let host = strip_www(host);
+    title_hostname_candidates(title)
+        .into_iter()
+        .map(|(candidate, _explicit_url)| candidate)
+        .any(|candidate| candidate == host || candidate.ends_with(&format!(".{host}")))
+}
+
+fn title_contains_explicit_url_hostname(title: &str, host: &str) -> bool {
+    let host = strip_www(host);
+    title_hostname_candidates(title)
+        .into_iter()
+        .filter(|(_candidate, explicit_url)| *explicit_url)
+        .map(|(candidate, _explicit_url)| candidate)
+        .any(|candidate| candidate == host || candidate.ends_with(&format!(".{host}")))
+}
+
+fn title_hostname_candidates(title: &str) -> Vec<(String, bool)> {
     title
         .to_lowercase()
         .split(|ch: char| {
@@ -978,8 +1526,12 @@ fn title_contains_hostname(title: &str, host: &str) -> bool {
                 || ch == '/'
                 || ch == '@')
         })
-        .filter_map(hostname_from_title_token)
-        .any(|candidate| candidate == host || candidate.ends_with(&format!(".{host}")))
+        .filter_map(|token| {
+            let token = token.trim_matches('.');
+            let explicit_url = token.starts_with("http://") || token.starts_with("https://");
+            hostname_from_title_token(token).map(|host| (host, explicit_url))
+        })
+        .collect()
 }
 
 fn hostname_from_title_token(token: &str) -> Option<String> {
@@ -1024,9 +1576,38 @@ fn expand_keyword_rule(rule: &str) -> Vec<String> {
     out
 }
 
+fn contains_bounded_phrase(title: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    title.match_indices(needle)
+        .any(|(start, _)| has_phrase_boundaries(title, start, needle.len()))
+}
+
+fn has_phrase_boundaries(text: &str, start: usize, len: usize) -> bool {
+    let before = text[..start].chars().next_back();
+    let after = text[start + len..].chars().next();
+    before.map(is_keyword_boundary).unwrap_or(true) && after.map(is_keyword_boundary).unwrap_or(true)
+}
+
+fn is_keyword_boundary(ch: char) -> bool {
+    !ch.is_ascii_alphanumeric()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn active_info(process_name: &str, title: &str) -> ActiveWindowInfo {
+        ActiveWindowInfo {
+            hwnd: 1,
+            pid: 1,
+            process_name: process_name.into(),
+            title: title.into(),
+            _class_name: String::new(),
+        }
+    }
 
     #[test]
     fn domain_rules_require_hostname_tokens() {
@@ -1049,6 +1630,55 @@ mod tests {
     }
 
     #[test]
+    fn website_rules_prefer_browser_or_explicit_url_context() {
+        assert!(website_rule_matches_window(
+            &active_info("chrome", "https://mail.gmail.com/mail/u/0/#inbox - Google Chrome"),
+            "gmail.com"
+        ));
+        assert!(website_rule_matches_window(
+            &active_info("notepad", "Notes - https://gmail.com - Notepad"),
+            "gmail.com"
+        ));
+        assert!(!website_rule_matches_window(
+            &active_info("notepad", "gmail.com notes.txt - Notepad"),
+            "gmail.com"
+        ));
+        assert!(website_rule_matches_window(
+            &active_info("chrome", "Gmail - Google Chrome"),
+            "gmail.com"
+        ));
+        assert!(website_rule_matches_window(
+            &active_info("msedge", "YouTube - Microsoft Edge"),
+            "youtube.com"
+        ));
+        assert!(!website_rule_matches_window(
+            &active_info("chrome", "New Tab - Google Chrome"),
+            "google.com"
+        ));
+    }
+
+    #[test]
+    fn app_rules_match_process_tokens_not_substrings() {
+        assert!(process_rule_matches("Microsoft Teams", "Teams"));
+        assert!(process_rule_matches("MSTeams", "Teams"));
+        assert!(process_rule_matches("DiscordCanary", "Discord"));
+        assert!(process_rule_matches(
+            "C:\\Program Files\\Bitwarden.exe",
+            "Bitwarden"
+        ));
+        assert!(!process_rule_matches("Steam", "Teams"));
+        assert!(!process_rule_matches("TeamViewer", "Teams"));
+    }
+
+    #[test]
+    fn whitelisted_processes_skip_auto_protect() {
+        let mut settings = DeskoySettings::default();
+        settings.blocked_title_keywords = vec!["gmail".into()];
+        assert!(blocked_app_reason(&active_info("chrome", "Gmail - Google Chrome"), &settings).is_some());
+        assert!(blocked_app_reason(&active_info("Outlook", "Gmail password reset"), &settings).is_none());
+    }
+
+    #[test]
     fn plain_keyword_rules_keep_title_matching() {
         assert!(blocked_title_rule_matches(
             "Inbox - Gmail - Google Chrome",
@@ -1057,6 +1687,16 @@ mod tests {
         assert!(blocked_title_rule_matches(
             "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
             "taxes.xlsx"
+        ));
+        assert!(blocked_title_rule_matches("Mail - Outlook", "mail"));
+        assert!(blocked_title_rule_matches(
+            "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
+            "taxes"
+        ));
+        assert!(!blocked_title_rule_matches("thumbnail.png - Photos", "mail"));
+        assert!(!blocked_title_rule_matches(
+            "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
+            "tax"
         ));
     }
 }
@@ -1438,7 +2078,8 @@ async fn get_app_version(app: AppHandle) -> Value {
 #[tauri::command]
 async fn get_state(app: AppHandle) -> Value {
     json!({
-        "active": get_settings_from_state(&app).enabled,
+        "active": effective_enabled(&app),
+        "paused": is_paused(&app),
         "maximized": app.get_webview_window("main").and_then(|w| w.is_maximized().ok()).unwrap_or(false)
     })
 }
@@ -1534,6 +2175,98 @@ async fn pick_cover_file(app: AppHandle) -> Value {
     } else {
         json!({ "ok": true, "path": "" })
     }
+}
+
+fn sanitized_settings(settings: &DeskoySettings) -> Value {
+    let cover_url_host = Url::parse(settings.cover_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    let cover_file_name = PathBuf::from(settings.cover_file_path.trim())
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string());
+    json!({
+        "hotkeySet": !settings.hotkey.trim().is_empty(),
+        "coverMode": settings.cover_mode,
+        "cover": settings.cover,
+        "customCoverEnabled": settings.use_custom_cover,
+        "customCoverUrlHost": cover_url_host,
+        "customCoverFileName": cover_file_name,
+        "audioMute": settings.audio_mute,
+        "enabled": settings.enabled,
+        "autoCoverBlocked": settings.auto_cover_blocked,
+        "blockedAppsCount": settings.blocked_apps.len(),
+        "blockedWebsitesCount": settings.blocked_websites.len(),
+        "blockedTitleKeywordsCount": settings.blocked_title_keywords.len(),
+        "theme": settings.theme,
+    })
+}
+
+fn diagnostics_payload(app: &AppHandle) -> Value {
+    let settings = get_settings_from_state(app);
+    let logs = load_protection_logs(app);
+    let (registered_hotkey, registered_escape, cover_open, cover_busy, cover_labels, session_reason, last_cover_error, last_cover_fallback, last_auto_protect_reason) = {
+        let state = app_state(app);
+        let rt = state.state.lock().unwrap();
+        (
+            rt.registered_hotkey.is_some(),
+            rt.registered_escape.is_some(),
+            rt.cover_open,
+            rt.cover_busy,
+            rt.cover_labels.clone(),
+            rt.cover_session.as_ref().map(|session| session.reason.clone()),
+            rt.last_cover_error.clone(),
+            rt.last_cover_fallback.clone(),
+            rt.last_auto_protect_reason.clone(),
+        )
+    };
+    let pkg = app.package_info();
+    json!({
+        "version": pkg.version.to_string(),
+        "name": pkg.name,
+        "settings": sanitized_settings(&settings),
+        "runtime": {
+            "effectiveEnabled": effective_enabled(app),
+            "paused": pause_label(app),
+            "registeredHotkey": registered_hotkey,
+            "registeredEscape": registered_escape,
+            "coverOpen": cover_open,
+            "coverBusy": cover_busy,
+            "coverWindowCount": cover_labels.len(),
+            "coverSessionReason": session_reason,
+            "lastCoverError": if last_cover_error.is_empty() { Value::Null } else { json!(last_cover_error) },
+            "lastCoverFallback": if last_cover_fallback.is_empty() { Value::Null } else { json!(last_cover_fallback) },
+            "lastAutoProtectReason": if last_auto_protect_reason.is_empty() { Value::Null } else { json!(last_auto_protect_reason) },
+        },
+        "recentProtectionLogs": logs.into_iter().take(5).map(|log| {
+            json!({
+                "timestamp": log.timestamp,
+                "processName": log.process_name,
+                "titleLength": log.title.chars().count(),
+                "action": log.action,
+            })
+        }).collect::<Vec<_>>()
+    })
+}
+
+#[tauri::command]
+async fn get_diagnostics(app: AppHandle) -> Value {
+    json!({ "ok": true, "data": diagnostics_payload(&app) })
+}
+
+#[tauri::command]
+async fn pause_for_minutes(app: AppHandle, minutes: u64) -> Value {
+    let minutes = minutes.clamp(1, 240);
+    pause_for_duration(app, Duration::from_secs(minutes * 60)).await
+}
+
+#[tauri::command]
+async fn pause_until_restart(app: AppHandle) -> Value {
+    pause_until_restart_inner(app).await
+}
+
+#[tauri::command]
+async fn resume_deskoy(app: AppHandle) -> Value {
+    resume_deskoy_inner(&app)
 }
 
 #[tauri::command]

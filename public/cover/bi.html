@@ -44,8 +44,67 @@
         color:#bfdbfe; font-weight:800;
       }
       .muted { color: var(--muted); }
-      .grid {
+      .app {
         height: calc(100% - 44px);
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        min-height: 0;
+      }
+      .nav {
+        background: #0a0f1d;
+        border-right: 1px solid var(--line);
+        padding: 14px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .nav-section {
+        margin: 8px 0 3px;
+        font-size: 10px;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .nav-item {
+        border-radius: 9px;
+        padding: 9px 10px;
+        color: #cbd5e1;
+        font-size: 13px;
+      }
+      .nav-item.active {
+        background: rgba(96,165,250,0.15);
+        color: #dbeafe;
+      }
+      .content {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: 48px minmax(0, 1fr);
+      }
+      .filterbar {
+        border-bottom: 1px solid var(--line);
+        background: #10182d;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        overflow: hidden;
+      }
+      .filter-chip {
+        height: 28px;
+        border-radius: 999px;
+        border: 1px solid rgba(147,164,200,0.22);
+        background: rgba(255,255,255,0.035);
+        color: #cbd5e1;
+        display: inline-flex;
+        align-items: center;
+        padding: 0 11px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .grid {
+        height: 100%;
         padding: 12px;
         box-sizing: border-box;
         display: grid;
@@ -83,6 +142,37 @@
           repeating-linear-gradient(90deg, transparent, transparent 19%, rgba(147,164,200,.15) 20%);
         position: relative;
         overflow: hidden;
+      }
+      .line-chart {
+        height: 104px;
+        margin-top: 10px;
+        border-radius: 8px;
+        border: 1px solid #283559;
+        background:
+          linear-gradient(180deg, rgba(34,197,94,.12), transparent),
+          repeating-linear-gradient(0deg, transparent, transparent 25px, rgba(147,164,200,.12) 26px);
+        padding: 12px;
+      }
+      .line-chart svg { width: 100%; height: 100%; display: block; }
+      .donut {
+        width: min(118px, 52%);
+        aspect-ratio: 1;
+        border-radius: 999px;
+        margin: 16px auto 8px;
+        background: conic-gradient(var(--blue) 0 46%, var(--green) 46% 78%, var(--amber) 78% 100%);
+        position: relative;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+      }
+      .donut::after {
+        content: "Segments";
+        position: absolute;
+        inset: 24%;
+        border-radius: 999px;
+        background: var(--card);
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 10px;
       }
       .bar {
         position: absolute;
@@ -122,6 +212,7 @@
       @keyframes pulse { 50% { opacity: .35; } }
 
       @media (max-width: 1100px) {
+        .app { grid-template-columns: 180px minmax(0, 1fr); }
         .grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
           overflow-y: auto;
@@ -130,6 +221,9 @@
       }
 
       @media (max-width: 700px) {
+        .nav { display: none; }
+        .app { grid-template-columns: minmax(0, 1fr); }
+        .filterbar { overflow-x: auto; }
         .grid {
           grid-template-columns: minmax(0, 1fr);
           overflow-y: auto;
@@ -147,7 +241,24 @@
       </div>
       <div class="pill"><span class="dot"></span><span>Live</span><span class="muted" style="opacity:.9">·</span><span class="muted"><span id="clock">--:--:--</span></span></div>
     </div>
-    <div class="grid">
+    <div class="app">
+      <aside class="nav">
+        <div class="nav-section">Dashboards</div>
+        <div class="nav-item active">Executive overview</div>
+        <div class="nav-item">Revenue operations</div>
+        <div class="nav-item">Customer health</div>
+        <div class="nav-section">Reports</div>
+        <div class="nav-item">Forecast</div>
+        <div class="nav-item">Regional detail</div>
+      </aside>
+      <main class="content">
+        <div class="filterbar">
+          <span class="filter-chip">Date: This quarter</span>
+          <span class="filter-chip">Region: All</span>
+          <span class="filter-chip">Segment: Enterprise</span>
+          <span class="filter-chip">Refresh: live</span>
+        </div>
+        <div class="grid">
       <div class="kpi"><div class="kpi-title">Revenue</div><div class="kpi-value" id="rev">£441.8k</div><div class="kpi-delta">+2.1%</div></div>
       <div class="kpi"><div class="kpi-title">Conversion</div><div class="kpi-value" id="conv">4.92%</div><div class="kpi-delta">+0.3%</div></div>
       <div class="kpi"><div class="kpi-title">Churn</div><div class="kpi-value" id="churn">1.21%</div><div class="kpi-delta" style="color:var(--amber)">-0.1%</div></div>
@@ -174,6 +285,22 @@
           <div class="tr"><span>Scotland</span><span id="n4">£79.4k</span><span class="muted">+3.3%</span></div>
         </div>
       </div>
+      <div class="panel">
+        <div class="kpi-title">Customer Mix</div>
+        <div class="donut" aria-hidden="true"></div>
+        <div class="pill" style="justify-content:center;width:fit-content;margin:0 auto;">Enterprise 46%</div>
+      </div>
+      <div class="panel">
+        <div class="kpi-title">Forecast Confidence</div>
+        <div class="line-chart" aria-hidden="true">
+          <svg viewBox="0 0 220 90" preserveAspectRatio="none">
+            <path d="M0 70 C30 58 42 62 70 46 S120 30 148 36 S190 50 220 22" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round"/>
+            <path d="M0 82 C30 72 42 74 70 62 S120 50 148 55 S190 66 220 46" fill="none" stroke="#60a5fa" stroke-width="3" stroke-linecap="round" opacity=".72"/>
+          </svg>
+        </div>
+      </div>
+        </div>
+      </main>
     </div>
     <script>
       const clock = document.getElementById('clock');

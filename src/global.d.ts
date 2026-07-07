@@ -5,6 +5,19 @@ declare global {
     deskoy: {
       openExternal: (url: string) => Promise<{ ok: boolean }>;
       getAppVersion: () => Promise<{ version: string; name: string }>;
+      getDisplays: () => Promise<{
+        ok: boolean;
+        displays: Array<{
+          id: number;
+          name: string;
+          width: number;
+          height: number;
+          x: number;
+          y: number;
+          scaleFactor: number;
+          primary: boolean;
+        }>;
+      }>;
       getUpdates: () => Promise<{ ok: boolean; data?: unknown; error?: string }>;
       checkAppUpdate: () => Promise<{
         ok: boolean;
@@ -23,6 +36,7 @@ declare global {
         hotkey: string;
         coverMode: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
         cover: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black';
+        coverDisplay: string;
         coverUrl: string;
         coverFilePath: string;
         whitelist: string[];
@@ -34,6 +48,9 @@ declare global {
         blockedWebsites: string[];
         blockedTitleKeywords: string[];
         theme: 'dark' | 'light' | 'system';
+        compactMode: boolean;
+        fontSize: 'small' | 'default' | 'large';
+        reduceMotion: boolean;
       }>;
       getProtectionLogs: () => Promise<
         Array<{
@@ -53,6 +70,7 @@ declare global {
           hotkey: string;
           coverMode: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
           cover: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black';
+          coverDisplay: string;
           coverUrl: string;
           coverFilePath: string;
           whitelist: string[];
@@ -64,6 +82,9 @@ declare global {
           blockedWebsites: string[];
           blockedTitleKeywords: string[];
           theme: 'dark' | 'light' | 'system';
+          compactMode: boolean;
+          fontSize: 'small' | 'default' | 'large';
+          reduceMotion: boolean;
         }>,
       ) => Promise<{ ok: boolean; error?: string }>;
       pickCoverFile: () => Promise<{ ok: boolean; path: string }>;

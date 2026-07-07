@@ -16,6 +16,7 @@ function onEvent<T>(event: string, cb: (payload: T) => void): Unlisten {
 window.deskoy = {
   openExternal: (url: string) => invoke('open_external', { url }),
   getAppVersion: () => invoke('get_app_version'),
+  getDisplays: () => invoke('get_displays'),
   getUpdates: () => invoke('get_updates'),
   checkAppUpdate: () => invoke('check_app_update'),
   installAppUpdate: () => invoke('install_app_update'),

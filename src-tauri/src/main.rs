@@ -55,6 +55,8 @@ struct DeskoySettings {
     hotkey: String,
     cover_mode: String,
     cover: String,
+    #[serde(default = "default_cover_display")]
+    cover_display: String,
     cover_url: String,
     cover_file_path: String,
     whitelist: Vec<String>,
@@ -66,6 +68,20 @@ struct DeskoySettings {
     blocked_websites: Vec<String>,
     blocked_title_keywords: Vec<String>,
     theme: String,
+    #[serde(default)]
+    compact_mode: bool,
+    #[serde(default = "default_font_size")]
+    font_size: String,
+    #[serde(default)]
+    reduce_motion: bool,
+}
+
+fn default_cover_display() -> String {
+    "all".into()
+}
+
+fn default_font_size() -> String {
+    "default".into()
 }
 
 impl Default for DeskoySettings {
@@ -74,6 +90,7 @@ impl Default for DeskoySettings {
             hotkey: String::new(),
             cover_mode: "excel".into(),
             cover: "excel".into(),
+            cover_display: default_cover_display(),
             cover_url: String::new(),
             cover_file_path: String::new(),
             whitelist: vec!["Teams".into(), "Slack".into(), "Outlook".into()],
@@ -92,6 +109,9 @@ impl Default for DeskoySettings {
             blocked_websites: vec![],
             blocked_title_keywords: vec![],
             theme: "dark".into(),
+            compact_mode: false,
+            font_size: default_font_size(),
+            reduce_motion: false,
         }
     }
 }
@@ -120,6 +140,19 @@ struct ActiveWindowInfo {
     _class_name: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DisplayInfo {
+    id: usize,
+    name: String,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    scale_factor: f64,
+    primary: bool,
+}
+
 #[derive(Default)]
 struct RuntimeState {
     registered_hotkey: Option<Shortcut>,
@@ -140,6 +173,7 @@ struct RuntimeState {
     last_auto_protect_reason: String,
     pending_audio_restore: Option<PendingAudioRestore>,
     updates_cache: Option<(Instant, Value)>,
+    app_update_cache: Option<(Instant, Value)>,
     upgrade_block: Option<UpgradeBlock>,
 }
 
@@ -165,6 +199,7 @@ struct DeskoyApp {
 
 const FEEDBACK_BUG_COOLDOWN_MS: u128 = 5 * 60 * 60 * 1000;
 const UPDATES_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const APP_UPDATE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const VERSION_POLICY_POLL: Duration = Duration::from_secs(6 * 60 * 60);
 const DEFAULT_UPDATER_URL: &str =
     "https://github.com/deskoys/deskoy/releases/latest/download/latest.json";
@@ -282,6 +317,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_external,
             get_app_version,
+            get_displays,
             get_updates,
             get_state,
             toggle,
@@ -342,7 +378,7 @@ fn load_protection_logs(app: &AppHandle) -> Vec<ProtectionLogEntry> {
         .unwrap_or_default()
 }
 
-fn append_protection_log(app: &AppHandle, info: &ActiveWindowInfo) {
+fn append_activity_log(app: &AppHandle, entry: ProtectionLogEntry) {
     let state = app_state(app);
     let mut store = load_store(&state.settings_path);
     let mut logs = store
@@ -350,8 +386,15 @@ fn append_protection_log(app: &AppHandle, info: &ActiveWindowInfo) {
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ProtectionLogEntry>>(v).ok())
         .unwrap_or_default();
-    logs.insert(
-        0,
+    logs.insert(0, entry);
+    logs.truncate(PROTECTION_LOG_LIMIT);
+    store["protectionLogs"] = serde_json::to_value(logs).unwrap_or_else(|_| json!([]));
+    save_store(&state.settings_path, &store);
+}
+
+fn append_protection_log(app: &AppHandle, info: &ActiveWindowInfo) {
+    append_activity_log(
+        app,
         ProtectionLogEntry {
             timestamp: now_ms(),
             process_name: info.process_name.clone(),
@@ -359,9 +402,40 @@ fn append_protection_log(app: &AppHandle, info: &ActiveWindowInfo) {
             action: "Covered and hidden".into(),
         },
     );
-    logs.truncate(PROTECTION_LOG_LIMIT);
-    store["protectionLogs"] = serde_json::to_value(logs).unwrap_or_else(|_| json!([]));
-    save_store(&state.settings_path, &store);
+}
+
+fn cover_activity_title(settings: &DeskoySettings) -> String {
+    if settings.cover_mode == "url" && !settings.cover_url.trim().is_empty() {
+        return "Custom URL cover".into();
+    }
+    if settings.cover_mode == "file" && !settings.cover_file_path.trim().is_empty() {
+        return "Custom file cover".into();
+    }
+    let kind = if is_cover_kind(&settings.cover_mode) {
+        settings.cover_mode.as_str()
+    } else {
+        settings.cover.as_str()
+    };
+    match kind {
+        "vscode" => "VS Code cover".into(),
+        "docs" => "Google Docs cover".into(),
+        "jira" => "Jira Board cover".into(),
+        "bi" => "BI Dashboard cover".into(),
+        "black" => "Blank cover".into(),
+        _ => "Excel Spreadsheet cover".into(),
+    }
+}
+
+fn append_cover_activation_log(app: &AppHandle, settings: &DeskoySettings) {
+    append_activity_log(
+        app,
+        ProtectionLogEntry {
+            timestamp: now_ms(),
+            process_name: "Deskoy".into(),
+            title: cover_activity_title(settings),
+            action: "Cover activated".into(),
+        },
+    );
 }
 
 fn clear_protection_logs_from_store(app: &AppHandle) {
@@ -398,6 +472,8 @@ fn load_settings_from_path(path: &PathBuf) -> DeskoySettings {
 }
 
 fn normalize_settings(mut settings: DeskoySettings) -> DeskoySettings {
+    settings.cover_display = normalize_cover_display(&settings.cover_display);
+    settings.font_size = normalize_font_size(&settings.font_size);
     if settings.use_custom_cover == false
         && (settings.cover_mode == "url" || settings.cover_mode == "file")
     {
@@ -420,6 +496,42 @@ fn normalize_settings(mut settings: DeskoySettings) -> DeskoySettings {
         settings.blocked_title_keywords = normalized_unique_lines(settings.blocked_title_keywords);
     }
     settings
+}
+
+fn normalize_font_size(value: &str) -> String {
+    match value.trim() {
+        "small" => "small".into(),
+        "large" => "large".into(),
+        _ => "default".into(),
+    }
+}
+
+fn normalize_cover_display(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed == "all" {
+        return "all".into();
+    }
+    let Some(index) = trimmed.strip_prefix("monitor:") else {
+        return "all".into();
+    };
+    match index.parse::<usize>() {
+        Ok(index) => format!("monitor:{index}"),
+        Err(_) => "all".into(),
+    }
+}
+
+fn selected_monitor_indices(settings: &DeskoySettings, monitor_count: usize) -> Vec<usize> {
+    if monitor_count == 0 {
+        return Vec::new();
+    }
+    if let Some(index) = settings
+        .cover_display
+        .strip_prefix("monitor:")
+        .and_then(|index| index.parse::<usize>().ok())
+    {
+        return vec![index.min(monitor_count - 1)];
+    }
+    (0..monitor_count).collect()
 }
 
 fn normalized_unique_lines(lines: Vec<String>) -> Vec<String> {
@@ -800,8 +912,9 @@ async fn toggle_cover_via_hotkey(app: AppHandle) {
         let settings = get_settings_from_state(&app);
         let app2 = app.clone();
         let mute = settings.audio_mute;
+        let cover_settings = settings.clone();
         let cover = tauri::async_runtime::spawn(async move {
-            open_cover_from_settings(&app2, &settings).await
+            open_cover_from_settings(&app2, &cover_settings).await
         });
         let app3 = app.clone();
         let audio = tauri::async_runtime::spawn(async move {
@@ -819,6 +932,7 @@ async fn toggle_cover_via_hotkey(app: AppHandle) {
             rt.cover_session = None;
             return;
         }
+        append_cover_activation_log(&app, &settings);
         app_state(&app).state.lock().unwrap().cover_busy = false;
     } else {
         close_cover_session(&app).await;
@@ -903,9 +1017,15 @@ fn open_cover_windows(
         labels.push(build_cover_window(app, "cover", settings, force_blank, None, true)?);
         return Ok(labels);
     }
-    for (index, monitor) in monitors.iter().enumerate() {
-        let label = cover_window_label(index);
-        match build_cover_window(app, &label, settings, force_blank, Some(monitor), index == 0) {
+    for (label_index, monitor_index) in selected_monitor_indices(settings, monitors.len())
+        .into_iter()
+        .enumerate()
+    {
+        let Some(monitor) = monitors.get(monitor_index) else {
+            continue;
+        };
+        let label = cover_window_label(label_index);
+        match build_cover_window(app, &label, settings, force_blank, Some(monitor), label_index == 0) {
             Ok(label) => labels.push(label),
             Err(err) => {
                 for label in labels {
@@ -967,12 +1087,7 @@ fn build_cover_window(
 
 fn cover_webview_url(settings: &DeskoySettings, force_blank: bool) -> WebviewUrl {
     if force_blank || settings.cover_mode == "black" {
-        return WebviewUrl::External(
-            Url::parse(
-                "data:text/html,<html><body style='margin:0;background:%23000'></body></html>",
-            )
-            .unwrap(),
-        );
+        return WebviewUrl::App("cover/blank.html".into());
     }
     if settings.cover_mode == "url" {
         if let Ok(url) = Url::parse(settings.cover_url.trim()) {
@@ -2155,6 +2270,47 @@ async fn get_app_version(app: AppHandle) -> Value {
     json!({ "version": pkg.version.to_string(), "name": pkg.name })
 }
 
+fn monitor_matches(a: &Monitor, b: &Monitor) -> bool {
+    a.name() == b.name()
+        && a.size() == b.size()
+        && a.position() == b.position()
+        && (a.scale_factor() - b.scale_factor()).abs() < f64::EPSILON
+}
+
+#[tauri::command]
+async fn get_displays(app: AppHandle) -> Value {
+    let primary = app.primary_monitor().ok().flatten();
+    let displays: Vec<DisplayInfo> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| {
+            let size = monitor.size();
+            let position = monitor.position();
+            let primary = primary
+                .as_ref()
+                .map(|primary| monitor_matches(monitor, primary))
+                .unwrap_or(index == 0);
+            DisplayInfo {
+                id: index,
+                name: monitor
+                    .name()
+                    .cloned()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| format!("Display {}", index + 1)),
+                width: size.width,
+                height: size.height,
+                x: position.x,
+                y: position.y,
+                scale_factor: monitor.scale_factor(),
+                primary,
+            }
+        })
+        .collect();
+    json!({ "ok": true, "displays": displays })
+}
+
 #[tauri::command]
 async fn get_state(app: AppHandle) -> Value {
     json!({
@@ -2274,6 +2430,7 @@ fn sanitized_settings(settings: &DeskoySettings) -> Value {
         "hotkeySet": !settings.hotkey.trim().is_empty(),
         "coverMode": settings.cover_mode,
         "cover": settings.cover,
+        "coverDisplay": settings.cover_display,
         "customCoverEnabled": settings.use_custom_cover,
         "customCoverUrlHost": cover_url_host,
         "customCoverFileName": cover_file_name,
@@ -2506,44 +2663,55 @@ fn updater_builder(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuild
 
 #[tauri::command]
 async fn check_app_update(app: AppHandle) -> Value {
-    let updater = match updater_builder(&app).and_then(|builder| {
+    {
+        let state = app_state(&app);
+        let rt = state.state.lock().unwrap();
+        if let Some((at, value)) = &rt.app_update_cache {
+            if at.elapsed() < APP_UPDATE_CACHE_TTL {
+                return value.clone();
+            }
+        }
+    }
+
+    let result = match updater_builder(&app).and_then(|builder| {
         builder
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|err| err.to_string())
     }) {
-        Ok(updater) => updater,
-        Err(error) => {
-            return json!({
+        Ok(updater) => match updater.check().await {
+            Ok(Some(update)) => json!({
                 "ok": true,
-                "configured": false,
+                "configured": true,
+                "available": true,
+                "version": update.version,
+                "currentVersion": update.current_version,
+                "notes": update.body.unwrap_or_default(),
+                "url": update.download_url.as_str()
+            }),
+            Ok(None) => json!({
+                "ok": true,
+                "configured": true,
+                "available": false
+            }),
+            Err(err) => json!({
+                "ok": false,
+                "configured": true,
                 "available": false,
-                "error": error
-            });
-        }
-    };
-    match updater.check().await {
-        Ok(Some(update)) => json!({
+                "error": err.to_string()
+            }),
+        },
+        Err(error) => json!({
             "ok": true,
-            "configured": true,
-            "available": true,
-            "version": update.version,
-            "currentVersion": update.current_version,
-            "notes": update.body.unwrap_or_default(),
-            "url": update.download_url.as_str()
-        }),
-        Ok(None) => json!({
-            "ok": true,
-            "configured": true,
-            "available": false
-        }),
-        Err(err) => json!({
-            "ok": false,
-            "configured": true,
+            "configured": false,
             "available": false,
-            "error": err.to_string()
+            "error": error
         }),
-    }
+    };
+
+    app_state(&app).state.lock().unwrap().app_update_cache =
+        Some((Instant::now(), result.clone()));
+    result
 }
 
 #[tauri::command]

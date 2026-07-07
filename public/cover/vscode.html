@@ -25,9 +25,24 @@
         height:32px;background:#111;display:flex;align-items:center;
         justify-content:space-between;
         padding:0 12px;font:12px var(--ui);color:#e5e7eb;
+        gap: 12px;
       }
+      .title-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+      .command{
+        width:min(38vw,420px);
+        height:22px;
+        border:1px solid #3c3c3c;
+        border-radius:6px;
+        background:#1f1f20;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        color:#cbd5e1;
+        font-size:11px;
+      }
+      .title-actions{display:flex;align-items:center;gap:10px;flex:1;justify-content:flex-end;}
       .clock{color:#9aa0a6;font-size:11px;}
-      .root{height:calc(100% - 32px);display:grid;grid-template-columns: 48px 260px minmax(0, 1fr);}
+      .root{height:calc(100% - 32px);display:grid;grid-template-columns: 48px 260px minmax(0, 1fr) 260px;}
       .activity{
         background:#1b1b1c;
         border-right:1px solid var(--line);
@@ -129,16 +144,85 @@
       .pill{
         padding:2px 8px;border-radius:999px;background:rgba(0,0,0,0.18);
       }
+      .preview{
+        background:#202021;
+        border-left:1px solid var(--line);
+        display:grid;
+        grid-template-rows:auto auto 1fr;
+        min-width:0;
+        overflow:hidden;
+        font:12px var(--ui);
+      }
+      .preview-head{
+        height:34px;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:0 12px;
+        border-bottom:1px solid var(--line);
+        color:#cbd5e1;
+      }
+      .outline{
+        padding:10px 12px;
+        border-bottom:1px solid var(--line);
+        color:#cbd5e1;
+      }
+      .outline-row{
+        padding:5px 0;
+        display:flex;
+        justify-content:space-between;
+        gap:8px;
+        color:#9aa0a6;
+      }
+      .outline-row strong{color:#d4d4d4;font-weight:600;}
+      .coverage{
+        padding:12px;
+        overflow:auto;
+      }
+      .coverage-title{
+        color:#cbd5e1;
+        margin-bottom:10px;
+        display:flex;
+        justify-content:space-between;
+      }
+      .coverage-bar{
+        height:8px;
+        border-radius:999px;
+        background:#111;
+        overflow:hidden;
+        margin:7px 0 12px;
+      }
+      .coverage-bar span{
+        display:block;
+        height:100%;
+        border-radius:inherit;
+        background:linear-gradient(90deg,#22c55e,#3794ff);
+      }
+      .mini-map{
+        height:120px;
+        border:1px solid var(--line);
+        border-radius:8px;
+        background:
+          linear-gradient(90deg, transparent 0 74%, rgba(55,148,255,.22) 74% 78%, transparent 78%),
+          repeating-linear-gradient(0deg, rgba(212,212,212,.15) 0 2px, transparent 2px 7px);
+        opacity:.85;
+      }
+      @media (max-width: 1100px){
+        .root{grid-template-columns: 48px 240px minmax(0, 1fr);}
+        .preview{display:none;}
+      }
       @media (max-width: 780px){
         .root{grid-template-columns: 48px 1fr;}
         .sidebar{display:none;}
+        .command{display:none;}
       }
     </style>
   </head>
   <body>
     <div class="titlebar">
-      <span>index.js — Visual Studio Code</span>
-      <span class="clock" id="clock">--:--:--</span>
+      <span class="title-name">index.js — Visual Studio Code</span>
+      <span class="command">deskoy-demo / src / index.js</span>
+      <span class="title-actions"><span class="clock" id="clock">--:--:--</span></span>
     </div>
     <div class="root">
       <div class="activity">
@@ -215,6 +299,20 @@
           </div>
         </div>
       </div>
+      <aside class="preview">
+        <div class="preview-head"><span>OUTLINE</span><span>index.js</span></div>
+        <div class="outline">
+          <div class="outline-row"><strong>buildReport()</strong><span>line 5</span></div>
+          <div class="outline-row"><strong>fetchRegions()</strong><span>api.js</span></div>
+          <div class="outline-row"><strong>sumBy()</strong><span>utils.js</span></div>
+        </div>
+        <div class="coverage">
+          <div class="coverage-title"><span>Test coverage</span><span>86%</span></div>
+          <div class="coverage-bar"><span style="width:86%"></span></div>
+          <div class="coverage-title"><span>Branch health</span><span>main</span></div>
+          <div class="mini-map" aria-hidden="true"></div>
+        </div>
+      </aside>
     </div>
     <script>
       const clock = document.getElementById("clock");

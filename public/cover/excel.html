@@ -16,6 +16,7 @@
         --tab2: #107c41;
         --accent: #22c55e;
         --font: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+        --col-width: 96px;
       }
       html, body {
         height: 100%;
@@ -36,6 +37,49 @@
         padding: 0 12px;
         font-size: 12.5px;
         letter-spacing: 0.2px;
+        gap: 14px;
+      }
+      .title-left, .title-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .title-left { flex: 1; }
+      .file-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .quick-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #22c55e;
+        box-shadow: 0 0 0 3px rgba(34,197,94,0.16);
+      }
+      .search {
+        width: min(34vw, 340px);
+        height: 22px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: #cbd5e1;
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        font-size: 11px;
+      }
+      .avatar {
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
+        background: #dbeafe;
+        color: #1d4ed8;
+        display: grid;
+        place-items: center;
+        font-size: 10px;
+        font-weight: 800;
       }
       .clock {
         color: #9ca3af;
@@ -134,20 +178,30 @@
         text-overflow: ellipsis;
         color: #111827;
       }
-      .sheet {
+      .workarea {
         height: calc(100% - 34px - 92px - 34px - 34px);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+        gap: 10px;
+        padding: 8px;
+        box-sizing: border-box;
+        background: #eef1f5;
+      }
+      .sheet {
+        height: 100%;
         background: var(--white);
         display: grid;
         grid-template-rows: 26px 1fr;
         overflow: auto;
         box-shadow: var(--shadow);
+        min-width: 0;
       }
       .sheet::-webkit-scrollbar { width: 10px; height: 10px; }
       .sheet::-webkit-scrollbar-thumb { background: rgba(17,24,39,0.16); border-radius: 10px; border: 2px solid #fff; }
       .sheet::-webkit-scrollbar-thumb:hover { background: rgba(17,24,39,0.24); }
       .colheads {
         display: grid;
-        grid-template-columns: 46px repeat(26, 96px);
+        grid-template-columns: 46px repeat(26, var(--col-width));
         border-bottom: 1px solid var(--line);
         background: #fafafa;
         font-size: 11px;
@@ -162,7 +216,86 @@
       .grid {
         overflow: hidden;
         display: grid;
-        grid-template-columns: 46px repeat(26, 96px);
+        grid-template-columns: 46px repeat(26, var(--col-width));
+      }
+      .insights {
+        min-width: 0;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow: hidden;
+      }
+      .insight-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #111827;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .insight-title span {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .mini-chart {
+        height: 126px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(180deg, rgba(15,108,189,0.08), rgba(15,108,189,0)),
+          repeating-linear-gradient(0deg, transparent, transparent 30px, rgba(17,24,39,0.06) 31px);
+        position: relative;
+        overflow: hidden;
+      }
+      .spark {
+        position: absolute;
+        inset: 18px 12px 22px;
+      }
+      .spark svg { width: 100%; height: 100%; display: block; }
+      .chart-labels {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 6px;
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .summary-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px;
+        background: #fbfbfd;
+      }
+      .summary-card strong {
+        display: block;
+        font-size: 17px;
+        margin-bottom: 3px;
+      }
+      .summary-card span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .comment {
+        border-left: 3px solid #0f6cbd;
+        background: #f8fbff;
+        border-radius: 6px;
+        padding: 9px;
+        font-size: 11.5px;
+        color: #374151;
+        line-height: 1.45;
       }
       .rowhead, .cell {
         height: 22px;
@@ -239,12 +372,39 @@
       @keyframes blink {
         50% { opacity: 0; }
       }
+      @media (max-width: 1180px) {
+        :root { --col-width: 84px; }
+        .workarea { grid-template-columns: minmax(0, 1fr) 240px; }
+        .toolbar { gap: 7px; }
+        .toolbar .pill:nth-child(3) { display: none; }
+      }
+      @media (max-width: 860px) {
+        :root { --col-width: 76px; }
+        .search, .insights { display: none; }
+        .workarea { grid-template-columns: minmax(0, 1fr); padding: 6px; }
+        .menus { gap: 12px; overflow: hidden; }
+        .toolbar span:nth-last-child(-n + 3) { display: none; }
+      }
+      @media (max-width: 620px) {
+        .titlebar { padding: 0 8px; }
+        .ribbon { height: 72px; }
+        .toolbar .pill { width: 46px; }
+        .formula { grid-template-columns: 58px 1fr; }
+        .workarea { height: calc(100% - 34px - 72px - 34px - 34px); }
+      }
     </style>
   </head>
   <body>
     <div class="titlebar">
-      <span>Q1_Sales_Report_Final_v3.xlsx — Microsoft Excel</span>
-      <span class="clock" id="clock">--:--:--</span>
+      <div class="title-left">
+        <span class="quick-dot"></span>
+        <span class="file-title">Q1_Sales_Report_Final_v3.xlsx — Microsoft Excel</span>
+      </div>
+      <div class="search">Search workbook</div>
+      <div class="title-right">
+        <span class="clock" id="clock">--:--:--</span>
+        <span class="avatar">AJ</span>
+      </div>
     </div>
     <div class="ribbon">
       <div class="menus">
@@ -262,9 +422,28 @@
       <div class="fx">=IF(D4&gt;0,"Above target","Below target")</div>
     </div>
 
-    <div class="sheet" id="sheet">
-      <div class="colheads" id="colheads"></div>
-      <div class="grid" id="grid"></div>
+    <div class="workarea">
+      <div class="sheet" id="sheet">
+        <div class="colheads" id="colheads"></div>
+        <div class="grid" id="grid"></div>
+      </div>
+      <aside class="insights">
+        <div class="insight-title">Q1 performance <span>Auto updated</span></div>
+        <div class="mini-chart" aria-hidden="true">
+          <div class="spark">
+            <svg viewBox="0 0 260 90" preserveAspectRatio="none">
+              <path d="M0 72 C38 60 52 48 86 52 S136 70 168 42 S218 28 260 18" fill="none" stroke="#0f6cbd" stroke-width="4" stroke-linecap="round"/>
+              <path d="M0 78 C38 68 52 58 86 62 S136 80 168 52 S218 40 260 30" fill="none" stroke="#107c41" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+            </svg>
+          </div>
+          <div class="chart-labels"><span>Jan</span><span>Feb</span><span>Mar</span></div>
+        </div>
+        <div class="summary-grid">
+          <div class="summary-card"><strong>+3.1%</strong><span>Actual vs target</span></div>
+          <div class="summary-card"><strong>GBP 9.6k</strong><span>Net variance</span></div>
+        </div>
+        <div class="comment">Forecast confidence is high. South region renewal risk needs follow-up before Friday.</div>
+      </aside>
     </div>
 
     <div class="tabs">

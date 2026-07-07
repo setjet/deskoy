@@ -10,6 +10,8 @@ deskoyUiAttached = true;
 /** Matches `saveSettings` / store `coverMode` in `global.d.ts`. */
 type DeskoyCoverMode = 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
 type DeskoyBuiltInCover = Exclude<DeskoyCoverMode, 'url' | 'file'>;
+type DeskoyDisplay = Awaited<ReturnType<Window['deskoy']['getDisplays']>>['displays'][number];
+type DeskoyFontSize = 'small' | 'default' | 'large';
 
 type DeskoySaveSettingsPatch = Parameters<Window['deskoy']['saveSettings']>[0];
 function el<T extends HTMLElement>(id: string): T {
@@ -98,6 +100,18 @@ const blockedKeywords = el<HTMLTextAreaElement>('blockedKeywords');
 // Active window debug panel removed from UI.
 const customSourcePanel = el<HTMLElement>('customSourcePanel');
 const blockedPanel = el<HTMLElement>('blockedPanel');
+const autoProtectCollapse = document.createElement('button');
+autoProtectCollapse.type = 'button';
+autoProtectCollapse.className = 'auto-protect-collapse-btn';
+autoProtectCollapse.hidden = true;
+autoProtectCollapse.setAttribute('aria-label', 'Collapse Auto Protect settings');
+autoProtectCollapse.setAttribute('aria-expanded', 'true');
+autoProtectCollapse.innerHTML = `
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+`;
+toggleAutoBlocked.parentElement?.insertBefore(autoProtectCollapse, toggleAutoBlocked);
 const appVersion = el<HTMLElement>('appVersion');
 const btnHelp = el<HTMLButtonElement>('btnHelp');
 const btnChangelog = el<HTMLButtonElement>('btnChangelog');
@@ -119,12 +133,54 @@ const spPageAppearance = el<HTMLElement>('spPageAppearance');
 const spPageFeedback = el<HTMLElement>('spPageFeedback');
 const spPageBug = el<HTMLElement>('spPageBug');
 const spPageLogs = el<HTMLElement>('spPageLogs');
+const spLogsSubtitle = spPageLogs.querySelector<HTMLElement>('.sp-page-sub')!;
+spLogsSubtitle.textContent = 'Recent cover activity and auto-protect events.';
 const spPageUpdates = el<HTMLElement>('spPageUpdates');
 const spPageAbout = el<HTMLElement>('spPageAbout');
 const spThemeTrack = el<HTMLElement>('spThemeTrack');
+const spAppearanceOptions = document.createElement('div');
+spAppearanceOptions.className = 'sp-card sp-appearance-options';
+spAppearanceOptions.innerHTML = `
+  <div class="sp-list-row">
+    <div class="sp-row-left">
+      <div class="sp-row-title">Font size</div>
+      <div class="sp-row-sub">Make Deskoy text smaller or larger.</div>
+    </div>
+    <div class="sp-row-right">
+      <div class="sp-seg-track sp-font-size-track" id="spFontSizeTrack">
+        <button type="button" class="sp-seg-btn" data-font-size="small">Small</button>
+        <button type="button" class="sp-seg-btn active" data-font-size="default">Default</button>
+        <button type="button" class="sp-seg-btn" data-font-size="large">Large</button>
+      </div>
+    </div>
+  </div>
+  <div class="sp-list-row">
+    <div class="sp-row-left">
+      <div class="sp-row-title">Compact mode</div>
+      <div class="sp-row-sub">Use tighter spacing in Deskoy.</div>
+    </div>
+    <div class="sp-row-right">
+      <button type="button" class="toggle" id="spToggleCompactMode" aria-label="Compact mode" aria-pressed="false"></button>
+    </div>
+  </div>
+  <div class="sp-list-row">
+    <div class="sp-row-left">
+      <div class="sp-row-title">Reduce motion</div>
+      <div class="sp-row-sub">Turn off extra animations.</div>
+    </div>
+    <div class="sp-row-right">
+      <button type="button" class="toggle" id="spToggleReduceMotion" aria-label="Reduce motion" aria-pressed="false"></button>
+    </div>
+  </div>
+`;
+spPageAppearance.appendChild(spAppearanceOptions);
+const spFontSizeTrack = spAppearanceOptions.querySelector<HTMLElement>('#spFontSizeTrack')!;
+const spToggleCompactMode = spAppearanceOptions.querySelector<HTMLButtonElement>('#spToggleCompactMode')!;
+const spToggleReduceMotion = spAppearanceOptions.querySelector<HTMLButtonElement>('#spToggleReduceMotion')!;
 const spGeneralHotkey = el<HTMLElement>('spGeneralHotkey');
 const spGeneralVersion = el<HTMLElement>('spGeneralVersion');
 const spGoHotkey = el<HTMLButtonElement>('spGoHotkey');
+spGeneralVersion.remove();
 
 const spFeedbackEmail = el<HTMLInputElement>('spFeedbackEmail');
 const spFeedbackText = el<HTMLTextAreaElement>('spFeedbackText');
@@ -149,11 +205,52 @@ const spAppVersion = el<HTMLElement>('spAppVersion');
 const spLogsList = el<HTMLElement>('spLogsList');
 const spClearLogs = el<HTMLButtonElement>('spClearLogs');
 const spLogsStatus = el<HTMLElement>('spLogsStatus');
+spPageGeneral.querySelector('.sp-general-split')?.remove();
+const spGeneralStatusSection = document.createElement('section');
+spGeneralStatusSection.className = 'sp-general-status-section';
+spGeneralStatusSection.innerHTML = `
+  <div class="sp-general-status-grid">
+    <div class="sp-general-stat">
+      <span class="sp-general-stat-label">Version</span>
+      <span class="sp-general-stat-value" id="spGeneralStatusVersion">—</span>
+    </div>
+    <div class="sp-general-stat">
+      <span class="sp-general-stat-label">Cover</span>
+      <span class="sp-general-stat-value" id="spGeneralStatusCover">—</span>
+    </div>
+    <div class="sp-general-stat">
+      <span class="sp-general-stat-label">Auto Protect</span>
+      <span class="sp-general-stat-value" id="spGeneralStatusAutoProtect">Off</span>
+    </div>
+  </div>
+`;
+const spGeneralStatusVersion = spGeneralStatusSection.querySelector<HTMLElement>('#spGeneralStatusVersion')!;
+const spGeneralStatusCover = spGeneralStatusSection.querySelector<HTMLElement>('#spGeneralStatusCover')!;
+const spGeneralStatusAutoProtect = spGeneralStatusSection.querySelector<HTMLElement>('#spGeneralStatusAutoProtect')!;
+const spCoverDisplaySection = document.createElement('section');
+spCoverDisplaySection.className = 'sp-cover-display-section';
+spCoverDisplaySection.innerHTML = `
+  <div class="sp-cover-display-head">
+    <div>
+      <h3 class="sp-split-heading">Cover Display</h3>
+      <p class="sp-cover-display-desc">Choose where the fake cover appears.</p>
+    </div>
+    <span class="sp-cover-display-chip" id="spCoverDisplayChip">Checking</span>
+  </div>
+  <div class="sp-cover-display-body" id="spCoverDisplayBody"></div>
+`;
+const spCoverDisplayBody = spCoverDisplaySection.querySelector<HTMLElement>('#spCoverDisplayBody')!;
+const spCoverDisplayChip = spCoverDisplaySection.querySelector<HTMLElement>('#spCoverDisplayChip')!;
+spPageGeneral.querySelector('.sp-page-head')?.after(spGeneralStatusSection);
+spStatusPageGeneral.closest('.sp-status-section')?.before(spCoverDisplaySection);
 
 const statusTimers = new WeakMap<HTMLElement, number>();
 let hasUnsavedChanges = false;
 let savedSnapshot = '';
 let currentTheme: 'dark' | 'light' | 'system' = 'dark';
+let compactModeOn = false;
+let currentFontSize: DeskoyFontSize = 'default';
+let reduceMotionOn = false;
 let muteAudioOn = false;
 let whitelistApps: string[] = [];
 /** Mirrors settings.enabled — global hotkey only works when true; hotkey capture UI only when true. */
@@ -161,9 +258,12 @@ let deskoyArmed = false;
 /** When true, custom URL/file overrides the Cover mode dropdown. */
 let useCustomCover = false;
 let customSourceMode: 'url' | 'file' = 'url';
+let coverDisplay = 'all';
+let availableDisplays: DeskoyDisplay[] = [];
 let recordingHotkey = false;
 let currentHotkey = '';
 let autoBlockedOn = false;
+let blockedPanelCollapsed = true;
 let blockedWebsiteRules: string[] = [];
 let blockedTitleKeywords: string[] = [];
 
@@ -177,6 +277,121 @@ function markUnsaved() {
   hasUnsavedChanges = true;
   setStatus(settingsStatus, 'Unsaved changes', 'muted', true);
 }
+
+function normalizeCoverDisplayValue(value: string | undefined): string {
+  const trimmed = (value ?? '').trim();
+  if (trimmed === 'all') return 'all';
+  return /^monitor:\d+$/.test(trimmed) ? trimmed : 'all';
+}
+
+function displayLabel(display: DeskoyDisplay, index: number): string {
+  const name = display.name.trim();
+  return name || `Display ${index + 1}`;
+}
+
+function displaySummary(display: DeskoyDisplay): string {
+  return `${display.width}x${display.height}${display.primary ? ' primary' : ''}`;
+}
+
+function activeCoverDisplayValue(): string {
+  const match = coverDisplay.match(/^monitor:(\d+)$/);
+  if (!match || availableDisplays.length === 0) return coverDisplay;
+  const index = Number(match[1]);
+  if (availableDisplays.some((display) => display.id === index)) return coverDisplay;
+  return `monitor:${availableDisplays[Math.min(index, availableDisplays.length - 1)].id}`;
+}
+
+function renderCoverDisplayPicker() {
+  if (!spCoverDisplayBody || !spCoverDisplayChip) return;
+  if (!availableDisplays.length) {
+    spCoverDisplayChip.textContent = 'Unavailable';
+    spCoverDisplayBody.innerHTML = '<p class="sp-cover-display-empty">Display selection is unavailable right now.</p>';
+    return;
+  }
+
+  if (availableDisplays.length === 1) {
+    const display = availableDisplays[0];
+    spCoverDisplayChip.textContent = '1 display';
+    spCoverDisplayBody.innerHTML = `
+      <div class="sp-cover-single-display">
+        <div class="sp-cover-single-screen"><span>1</span></div>
+        <div>
+          <div class="sp-cover-single-title">Using your only display</div>
+          <div class="sp-cover-single-sub">${escapeHtml(displaySummary(display))}</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  spCoverDisplayChip.textContent = `${availableDisplays.length} displays`;
+  const activeValue = activeCoverDisplayValue();
+  const minX = Math.min(...availableDisplays.map((display) => display.x));
+  const minY = Math.min(...availableDisplays.map((display) => display.y));
+  const maxX = Math.max(...availableDisplays.map((display) => display.x + display.width));
+  const maxY = Math.max(...availableDisplays.map((display) => display.y + display.height));
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  const monitorButtons = availableDisplays
+    .map((display, index) => {
+      const value = `monitor:${display.id}`;
+      const selected = activeValue === value;
+      const style = [
+        `--display-left:${(((display.x - minX) / spanX) * 100).toFixed(2)}%`,
+        `--display-top:${(((display.y - minY) / spanY) * 100).toFixed(2)}%`,
+        `--display-width:${Math.max(15, (display.width / spanX) * 100).toFixed(2)}%`,
+        `--display-height:${Math.max(24, (display.height / spanY) * 100).toFixed(2)}%`,
+      ].join(';');
+      return `<button type="button" class="sp-monitor-tile${selected ? ' active' : ''}" data-cover-display="${value}" style="${style}" aria-pressed="${selected}">
+        <span class="sp-monitor-number">${index + 1}</span>
+        <span class="sp-monitor-name">${escapeHtml(displayLabel(display, index))}</span>
+        ${display.primary ? '<span class="sp-monitor-primary">Primary</span>' : ''}
+      </button>`;
+    })
+    .join('');
+
+  spCoverDisplayBody.innerHTML = `
+    <div class="sp-cover-display-choice-row">
+      <button type="button" class="sp-display-choice${coverDisplay === 'all' ? ' active' : ''}" data-cover-display="all" aria-pressed="${coverDisplay === 'all'}">
+        <span class="sp-display-choice-title">All displays</span>
+        <span class="sp-display-choice-sub">Cover every connected screen</span>
+      </button>
+      ${availableDisplays
+        .map((display, index) => {
+          const value = `monitor:${display.id}`;
+          const selected = activeValue === value && coverDisplay !== 'all';
+          return `<button type="button" class="sp-display-choice${selected ? ' active' : ''}" data-cover-display="${value}" aria-pressed="${selected}">
+            <span class="sp-display-choice-title">Display ${index + 1}</span>
+            <span class="sp-display-choice-sub">${escapeHtml(displaySummary(display))}</span>
+          </button>`;
+        })
+        .join('')}
+    </div>
+    <div class="sp-monitor-map" aria-label="Connected displays">
+      ${monitorButtons}
+    </div>
+  `;
+}
+
+async function refreshCoverDisplayList() {
+  try {
+    const result = await window.deskoy.getDisplays();
+    availableDisplays = result.ok && Array.isArray(result.displays) ? result.displays : [];
+  } catch {
+    availableDisplays = [];
+  }
+  renderCoverDisplayPicker();
+}
+
+spCoverDisplaySection.addEventListener('click', (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-cover-display]');
+  if (!button || !spCoverDisplaySection.contains(button)) return;
+  const next = normalizeCoverDisplayValue(button.dataset.coverDisplay);
+  if (next === coverDisplay) return;
+  coverDisplay = next;
+  renderCoverDisplayPicker();
+  markUnsaved();
+});
 const coverOptions: Record<
   string,
   { iconHtml: string; label: string; cover: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' }
@@ -262,6 +477,18 @@ function setStatus(target: HTMLElement, msg: string, kind: 'ok' | 'error' | 'mut
 function setToggle(elm: HTMLButtonElement, on: boolean) {
   elm.classList.toggle('on', on);
   elm.setAttribute('aria-pressed', String(on));
+}
+
+function setBlockedPanelCollapsed(collapsed: boolean) {
+  blockedPanelCollapsed = collapsed;
+  blockedPanel.classList.toggle('collapsed', collapsed);
+  autoProtectCollapse.hidden = !autoBlockedOn;
+  autoProtectCollapse.classList.toggle('is-collapsed', collapsed);
+  autoProtectCollapse.setAttribute('aria-expanded', String(!collapsed));
+  autoProtectCollapse.setAttribute(
+    'aria-label',
+    collapsed ? 'Expand Auto Protect settings' : 'Collapse Auto Protect settings',
+  );
 }
 
 function setMaximizedUi(): void {
@@ -353,6 +580,7 @@ function setCoverMode(modeRaw: string) {
   coverMenu.querySelectorAll<HTMLElement>('.dd-opt').forEach((o) => {
     o.classList.toggle('sel', o.dataset.cover === mode);
   });
+  refreshGeneralPanel();
 }
 
 /** Built-in Cover mode is ignored whenever custom override is on (URL/file may still be empty). */
@@ -441,6 +669,7 @@ function buildSettingsPatch(): DeskoySaveSettingsPatch {
     hotkey: newHotkey,
     coverMode: mode,
     cover: newCover,
+    coverDisplay,
     coverUrl: trimmedUrl,
     coverFilePath: trimmedFilePath,
     audioMute: muteAudioOn,
@@ -453,11 +682,18 @@ function buildSettingsPatch(): DeskoySaveSettingsPatch {
 }
 
 async function refresh() {
-  const [state, settings] = await Promise.all([window.deskoy.getState(), window.deskoy.getSettings()]);
+  const [state, settings, displayResult] = await Promise.all([
+    window.deskoy.getState(),
+    window.deskoy.getSettings(),
+    window.deskoy.getDisplays().catch(() => ({ ok: false, displays: [] as DeskoyDisplay[] })),
+  ]);
 
   setActiveState(state.active);
   setMaximizedUi();
   currentHotkey = typeof settings.hotkey === 'string' ? settings.hotkey : '';
+  coverDisplay = normalizeCoverDisplayValue(settings.coverDisplay);
+  availableDisplays = displayResult.ok && Array.isArray(displayResult.displays) ? displayResult.displays : [];
+  renderCoverDisplayPicker();
   renderHotkeyBadges(currentHotkey);
   coverUrl.value = settings.coverUrl ?? '';
   coverFilePath.value = settings.coverFilePath ?? '';
@@ -475,7 +711,7 @@ async function refresh() {
   setToggle(toggleMuteAudio, muteAudioOn);
   autoBlockedOn = Boolean(settings.autoCoverBlocked);
   setToggle(toggleAutoBlocked, autoBlockedOn);
-  blockedPanel.classList.toggle('collapsed', !autoBlockedOn);
+  setBlockedPanelCollapsed(!autoBlockedOn);
   blockedWebsiteRules = Array.isArray(settings.blockedWebsites)
     ? settings.blockedWebsites
     : [];
@@ -485,6 +721,10 @@ async function refresh() {
   blockedWebsites.value = blockedWebsiteRules.join('\n');
   blockedKeywords.value = blockedTitleKeywords.join('\n');
   applyTheme(settings.theme ?? 'dark');
+  applyCompactMode(Boolean(settings.compactMode));
+  applyFontSize(settings.fontSize);
+  applyReduceMotion(Boolean(settings.reduceMotion));
+  refreshGeneralPanel();
 
   hasUnsavedChanges = false;
   savedSnapshot = JSON.stringify(buildSettingsPatch());
@@ -519,7 +759,7 @@ window.addEventListener('click', (e) => {
 
 hotkeyRow.addEventListener('click', () => {
   if (!deskoyArmed) {
-    setStatus(settingsStatus, 'Arm Deskoy first', 'error');
+    setStatus(settingsStatus, 'Toggle Deskoy first', 'error');
     return;
   }
   beginHotkeyCapture();
@@ -608,8 +848,15 @@ toggleMuteAudio.addEventListener('click', async () => {
 toggleAutoBlocked.addEventListener('click', async () => {
   autoBlockedOn = !autoBlockedOn;
   setToggle(toggleAutoBlocked, autoBlockedOn);
-  blockedPanel.classList.toggle('collapsed', !autoBlockedOn);
+  setBlockedPanelCollapsed(!autoBlockedOn);
+  refreshGeneralPanel();
   markUnsaved();
+});
+
+autoProtectCollapse.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (!autoBlockedOn) return;
+  setBlockedPanelCollapsed(!blockedPanelCollapsed);
 });
 
 function normalizeKeywordLines(raw: string): string[] {
@@ -801,6 +1048,30 @@ function applyTheme(pref: 'dark' | 'light' | 'system') {
   });
 }
 
+function normalizeFontSize(value: string | undefined): DeskoyFontSize {
+  return value === 'small' || value === 'large' ? value : 'default';
+}
+
+function applyCompactMode(on: boolean) {
+  compactModeOn = on;
+  document.documentElement.setAttribute('data-density', on ? 'compact' : 'default');
+  setToggle(spToggleCompactMode, on);
+}
+
+function applyFontSize(value: string | undefined) {
+  currentFontSize = normalizeFontSize(value);
+  document.documentElement.setAttribute('data-font-size', currentFontSize);
+  spFontSizeTrack.querySelectorAll<HTMLButtonElement>('.sp-seg-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.fontSize === currentFontSize);
+  });
+}
+
+function applyReduceMotion(on: boolean) {
+  reduceMotionOn = on;
+  document.documentElement.setAttribute('data-motion', on ? 'reduced' : 'default');
+  setToggle(spToggleReduceMotion, on);
+}
+
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
   if (currentTheme === 'system') applyTheme('system');
 });
@@ -811,6 +1082,26 @@ spThemeTrack.addEventListener('click', (e) => {
   const theme = btn.dataset.theme as 'dark' | 'light' | 'system';
   applyTheme(theme);
   void window.deskoy.saveSettings({ theme });
+});
+
+spFontSizeTrack.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.sp-seg-btn');
+  if (!btn || !btn.dataset.fontSize) return;
+  const fontSize = normalizeFontSize(btn.dataset.fontSize);
+  applyFontSize(fontSize);
+  void window.deskoy.saveSettings({ fontSize });
+});
+
+spToggleCompactMode.addEventListener('click', () => {
+  const compactMode = !compactModeOn;
+  applyCompactMode(compactMode);
+  void window.deskoy.saveSettings({ compactMode });
+});
+
+spToggleReduceMotion.addEventListener('click', () => {
+  const reduceMotion = !reduceMotionOn;
+  applyReduceMotion(reduceMotion);
+  void window.deskoy.saveSettings({ reduceMotion });
 });
 
 /* ── Feedback form ──────────────────────────────── */
@@ -996,7 +1287,10 @@ function setSettingsPage(page: SettingsPage) {
   };
   spHeaderTitle.textContent = titleMap[page];
 
-  if (page === 'general') refreshGeneralPanel();
+  if (page === 'general') {
+    refreshGeneralPanel();
+    void refreshCoverDisplayList();
+  }
   if (page === 'logs') void refreshLogsPanel();
   if (page === 'updates') void refreshUpdatesPanel();
 }
@@ -1015,6 +1309,10 @@ bindNav(spNavAbout, 'about');
 function refreshGeneralPanel() {
   spGeneralVersion.textContent = appVersion.textContent || '—';
   spGeneralHotkey.textContent = currentHotkey.trim() ? currentHotkey : 'Not set';
+  spGeneralStatusVersion.textContent = appVersion.textContent || '—';
+  const selectedCover = (coverMode.value as keyof typeof coverOptions) || 'excel';
+  spGeneralStatusCover.textContent = coverOptions[selectedCover]?.label ?? 'Excel Spreadsheet';
+  spGeneralStatusAutoProtect.textContent = autoBlockedOn ? 'On' : 'Off';
 }
 
 function escapeHtml(value: string): string {
@@ -1040,7 +1338,7 @@ async function refreshLogsPanel() {
     const logs = await window.deskoy.getProtectionLogs();
     spClearLogs.disabled = logs.length === 0;
     if (!logs.length) {
-      spLogsList.innerHTML = '<p class="sp-logs-empty">No auto-protect events yet.</p>';
+      spLogsList.innerHTML = '<p class="sp-logs-empty">No cover activity yet.</p>';
       return;
     }
     spLogsList.innerHTML = logs
@@ -1048,13 +1346,27 @@ async function refreshLogsPanel() {
         const processName = escapeHtml(log.processName || 'Unknown process');
         const title = escapeHtml(log.title || 'Untitled window');
         const action = escapeHtml(log.action || 'Protected');
-        return `<div class="sp-log-row">
-          <div class="sp-log-top">
-            <span class="sp-log-process">${processName}</span>
-            <span class="sp-log-time">${formatLogTime(log.timestamp)}</span>
+        const isCoverActivation = /cover activated/i.test(log.action || '');
+        const kind = isCoverActivation ? 'cover' : 'protect';
+        const label = isCoverActivation ? 'Cover' : 'Auto Protect';
+        const iconPath = isCoverActivation
+          ? 'M10.7429 5.09232C11.1494 5.03223 11.5686 5 12.0004 5C17.1054 5 20.4553 9.50484 21.5807 11.2868C21.7169 11.5025 21.785 11.6103 21.8231 11.7767C21.8518 11.9016 21.8517 12.0987 21.8231 12.2236C21.7849 12.3899 21.7164 12.4985 21.5792 12.7156C21.2793 13.1901 20.8222 13.8571 20.2165 14.5805M6.72432 6.71504C4.56225 8.1817 3.09445 10.2194 2.42111 11.2853C2.28428 11.5019 2.21587 11.6102 2.17774 11.7765C2.1491 11.9014 2.14909 12.0984 2.17771 12.2234C2.21583 12.3897 2.28393 12.4975 2.42013 12.7132C3.54554 14.4952 6.89541 19 12.0004 19C14.0588 19 15.8319 18.2676 17.2888 17.2766M3.00042 3L21.0004 21M9.8791 9.87868C9.3362 10.4216 9.00042 11.1716 9.00042 12C9.00042 13.6569 10.3436 15 12.0004 15C12.8288 15 13.5788 14.6642 14.1217 14.1213'
+          : 'M13 7.5L10 10.5L14 12.5L11 15.5M20 12C20 16.9084 14.646 20.4784 12.698 21.6148C12.4766 21.744 12.3659 21.8086 12.2097 21.8421C12.0884 21.8681 11.9116 21.8681 11.7903 21.8421C11.6341 21.8086 11.5234 21.744 11.302 21.6148C9.35396 20.4784 4 16.9084 4 12V7.2176C4 6.41809 4 6.01833 4.13076 5.6747C4.24627 5.37114 4.43398 5.10028 4.67766 4.88553C4.9535 4.64244 5.3278 4.50208 6.0764 4.22135L11.4382 2.21067C11.6461 2.13271 11.75 2.09373 11.857 2.07828C11.9518 2.06457 12.0482 2.06457 12.143 2.07828C12.25 2.09373 12.3539 2.13271 12.5618 2.21067L17.9236 4.22135C18.6722 4.50208 19.0465 4.64244 19.3223 4.88553C19.566 5.10028 19.7537 5.37114 19.8692 5.6747C20 6.01833 20 6.41809 20 7.2176V12Z';
+        return `<div class="sp-log-row ${kind}">
+          <div class="sp-log-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="${iconPath}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </div>
-          <div class="sp-log-title">${title}</div>
-          <div class="sp-log-action">${action}</div>
+          <div class="sp-log-body">
+            <div class="sp-log-top">
+              <span class="sp-log-process">${processName}</span>
+              <span class="sp-log-kind">${label}</span>
+              <span class="sp-log-time">${formatLogTime(log.timestamp)}</span>
+            </div>
+            <div class="sp-log-title">${title}</div>
+            <div class="sp-log-action">${action}</div>
+          </div>
         </div>`;
       })
       .join('');

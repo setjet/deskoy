@@ -12,6 +12,42 @@ type DeskoyCoverMode = 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | '
 type DeskoyBuiltInCover = Exclude<DeskoyCoverMode, 'url' | 'file'>;
 type DeskoyDisplay = Awaited<ReturnType<Window['deskoy']['getDisplays']>>['displays'][number];
 type DeskoyFontSize = 'small' | 'default' | 'large';
+type DeskoySettings = Awaited<ReturnType<Window['deskoy']['getSettings']>>;
+type DeskoyProfile = DeskoySettings['profiles'][number];
+type DeskoyProfileSettings = DeskoyProfile['settings'];
+type DeskoyUpdatesPayload = {
+  ok: true;
+  visible?: boolean;
+  title?: string;
+  version?: string;
+  notes?: string;
+  downloadUrl?: string;
+};
+type NativeUpdatePayload = Awaited<ReturnType<Window['deskoy']['checkAppUpdate']>>;
+type ProfileDialogResult = { confirmed: boolean; value?: string };
+type ProfileDialogOptions = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  input?: {
+    label: string;
+    placeholder?: string;
+    value?: string;
+  };
+};
+
+const PROFILE_DIALOG_ADD_ICON = `
+  <svg viewBox="0 0 24 24" fill="none">
+    <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+`;
+const PROFILE_DIALOG_DELETE_ICON = `
+  <svg viewBox="0 0 24 24" fill="none">
+    <path d="M16 6V5.2C16 4.0799 16 3.51984 15.782 3.09202C15.5903 2.71569 15.2843 2.40973 14.908 2.21799C14.4802 2 13.9201 2 12.8 2H11.2C10.0799 2 9.51984 2 9.09202 2.21799C8.71569 2.40973 8.40973 2.71569 8.21799 3.09202C8 3.51984 8 4.0799 8 5.2V6M3 6H21M19 6V17.2C19 18.8802 19 19.7202 18.673 20.362C18.3854 20.9265 17.9265 21.3854 17.362 21.673C16.7202 22 15.8802 22 14.2 22H9.8C8.11984 22 7.27976 22 6.63803 21.673C6.07354 21.3854 5.6146 20.9265 5.32698 20.362C5 19.7202 5 18.8802 5 17.2V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+`;
 
 type DeskoySaveSettingsPatch = Parameters<Window['deskoy']['saveSettings']>[0];
 function el<T extends HTMLElement>(id: string): T {
@@ -66,6 +102,42 @@ function showUpgradeRequired(payload: { message: string; downloadUrl: string; mi
   closeSettingsPanel();
 }
 
+function parseVersionParts(version: string): number[] | null {
+  const normalized = version.trim().replace(/^v/i, '').split(/[+-]/, 1)[0];
+  if (!/^\d+(?:\.\d+){0,3}$/.test(normalized)) return null;
+  return normalized.split('.').map((part) => Number(part));
+}
+
+function compareVersions(a: string, b: string): number | null {
+  const aParts = parseVersionParts(a);
+  const bParts = parseVersionParts(b);
+  if (!aParts || !bParts) return null;
+  const length = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < length; i += 1) {
+    const aPart = aParts[i] ?? 0;
+    const bPart = bParts[i] ?? 0;
+    if (aPart !== bPart) return aPart > bPart ? 1 : -1;
+  }
+  return 0;
+}
+
+function updateVersionIsNewer(updateVersion: string, installedVersion: string): boolean {
+  const comparison = compareVersions(updateVersion, installedVersion);
+  return comparison === null || comparison > 0;
+}
+
+function nativeUpdateIsAvailable(native: NativeUpdatePayload, installedVersion: string): boolean {
+  if (!native.ok || !native.available) return false;
+  if (!native.version || !installedVersion) return true;
+  return updateVersionIsNewer(native.version, installedVersion);
+}
+
+function displayUpdateVersion(version: string): string {
+  const value = version.trim();
+  if (!value) return '';
+  return value.toLowerCase().startsWith('v') ? value : `v${value}`;
+}
+
 const hotkeyRow = el<HTMLElement>('hotkeyRow');
 const hotkeyCapture = el<HTMLElement>('hotkeyCapture');
 const hotkeyBadges = el<HTMLElement>('hotkeyBadges');
@@ -92,6 +164,125 @@ const btnToggle = el<HTMLButtonElement>('btnToggle');
 const btnMinimize = el<HTMLButtonElement>('btnMinimize');
 const btnClose = el<HTMLButtonElement>('btnClose');
 const stateText = el<HTMLElement>('stateText');
+const statusPill = el<HTMLElement>('pillState');
+const updateNotice = document.createElement('button');
+updateNotice.type = 'button';
+updateNotice.className = 'update-notice';
+updateNotice.hidden = true;
+updateNotice.innerHTML = `
+  <span class="update-notice-icon" aria-hidden="true">📢</span>
+  <span class="update-notice-sep" aria-hidden="true"></span>
+  <span class="update-notice-text" id="updateNoticeText">Deskoy update is out</span>
+  <span class="update-notice-action">Download</span>
+  <svg class="update-notice-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M9 6L15 12L9 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+`;
+const profileDropdown = document.createElement('div');
+profileDropdown.className = 'profile-dropdown';
+profileDropdown.innerHTML = `
+  <button type="button" class="profile-pill" id="profileTrigger" aria-haspopup="menu" aria-expanded="false">
+    <span class="profile-label" id="profileLabel">Create profile</span>
+    <svg class="profile-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <div class="profile-menu" id="profileMenu" role="menu"></div>
+`;
+statusPill.parentElement?.insertBefore(updateNotice, statusPill);
+statusPill.parentElement?.insertBefore(profileDropdown, statusPill);
+const updateNoticeText = updateNotice.querySelector<HTMLElement>('#updateNoticeText')!;
+function setUpdateNoticeVisible(version: string) {
+  const label = displayUpdateVersion(version);
+  updateNoticeText.textContent = label ? `Deskoy ${label} is out` : 'Deskoy update is out';
+  updateNotice.hidden = false;
+}
+
+function hideUpdateNotice() {
+  updateNotice.hidden = true;
+}
+
+async function refreshUpdateNotice() {
+  try {
+    const [meta, res, native] = await Promise.all([
+      window.deskoy.getAppVersion(),
+      window.deskoy.getUpdates(),
+      window.deskoy.checkAppUpdate().catch(
+        (): NativeUpdatePayload => ({
+          ok: false,
+          configured: false,
+          available: false,
+          error: 'native_update_failed',
+        }),
+      ),
+    ]);
+
+    const data = res.ok ? (res.data as Partial<DeskoyUpdatesPayload> | undefined) : undefined;
+    if (res.ok && (!data || data.ok !== true)) {
+      hideUpdateNotice();
+      return;
+    }
+
+    const currentAppVersion = meta.version.trim();
+    const version = typeof data?.version === 'string' ? data.version.trim() : '';
+    const visible = Boolean(data?.visible);
+    const nativeAvailable = nativeUpdateIsAvailable(native, currentAppVersion);
+    const feedAvailable =
+      visible &&
+      (!version || !currentAppVersion || updateVersionIsNewer(version, currentAppVersion));
+
+    if (!feedAvailable && !nativeAvailable) {
+      hideUpdateNotice();
+      return;
+    }
+
+    setUpdateNoticeVisible(nativeAvailable && native.version ? native.version : version);
+  } catch {
+    hideUpdateNotice();
+  }
+}
+
+const profileTrigger = profileDropdown.querySelector<HTMLButtonElement>('#profileTrigger')!;
+const profileLabel = profileDropdown.querySelector<HTMLElement>('#profileLabel')!;
+const profileMenu = profileDropdown.querySelector<HTMLElement>('#profileMenu')!;
+const profileDialogOverlay = document.createElement('div');
+profileDialogOverlay.className = 'modal-overlay profile-dialog-overlay';
+profileDialogOverlay.innerHTML = `
+  <div class="lic-modal profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profileDialogTitle" aria-describedby="profileDialogMessage">
+    <div class="lic-modal__header profile-dialog-header">
+      <div class="lic-modal__header-left">
+        <span class="profile-dialog-icon" aria-hidden="true">
+          ${PROFILE_DIALOG_ADD_ICON}
+        </span>
+        <div>
+          <h2 id="profileDialogTitle" class="lic-modal__title profile-dialog-title"></h2>
+          <p id="profileDialogMessage" class="lic-modal__subtitle profile-dialog-message"></p>
+        </div>
+      </div>
+    </div>
+    <div class="lic-modal__body profile-dialog-body">
+      <label class="profile-dialog-field" id="profileDialogField" hidden>
+        <span class="profile-dialog-label" id="profileDialogInputLabel"></span>
+        <input class="sp-input profile-dialog-input" id="profileDialogInput" type="text" maxlength="40" autocomplete="off" />
+        <span class="profile-dialog-error" id="profileDialogError"></span>
+      </label>
+      <div class="lic-btns profile-dialog-actions">
+        <button type="button" class="btn btn-ghost" id="profileDialogCancel">Cancel</button>
+        <button type="button" class="btn btn-primary profile-dialog-confirm" id="profileDialogConfirm">Save</button>
+      </div>
+    </div>
+  </div>
+`;
+document.body.appendChild(profileDialogOverlay);
+const profileDialogIcon = profileDialogOverlay.querySelector<HTMLElement>('.profile-dialog-icon')!;
+const profileDialogTitle = profileDialogOverlay.querySelector<HTMLElement>('#profileDialogTitle')!;
+const profileDialogMessage = profileDialogOverlay.querySelector<HTMLElement>('#profileDialogMessage')!;
+const profileDialogField = profileDialogOverlay.querySelector<HTMLElement>('#profileDialogField')!;
+const profileDialogInputLabel = profileDialogOverlay.querySelector<HTMLElement>('#profileDialogInputLabel')!;
+const profileDialogInput = profileDialogOverlay.querySelector<HTMLInputElement>('#profileDialogInput')!;
+const profileDialogError = profileDialogOverlay.querySelector<HTMLElement>('#profileDialogError')!;
+const profileDialogCancel = profileDialogOverlay.querySelector<HTMLButtonElement>('#profileDialogCancel')!;
+const profileDialogConfirm = profileDialogOverlay.querySelector<HTMLButtonElement>('#profileDialogConfirm')!;
 const toggleMuteAudio = el<HTMLButtonElement>('toggleMuteAudio');
 const toggleUseCustom = el<HTMLButtonElement>('toggleUseCustom');
 const toggleAutoBlocked = el<HTMLButtonElement>('toggleAutoBlocked');
@@ -233,7 +424,7 @@ spCoverDisplaySection.innerHTML = `
   <div class="sp-cover-display-head">
     <div>
       <h3 class="sp-split-heading">Cover Display</h3>
-      <p class="sp-cover-display-desc">Choose where the fake cover appears.</p>
+      <p class="sp-cover-display-desc">Choose where the cover appears.</p>
     </div>
     <span class="sp-cover-display-chip" id="spCoverDisplayChip">Checking</span>
   </div>
@@ -253,6 +444,12 @@ let currentFontSize: DeskoyFontSize = 'default';
 let reduceMotionOn = false;
 let muteAudioOn = false;
 let whitelistApps: string[] = [];
+let blockedAppRules: string[] = [];
+let activeProfileId = 'default';
+let profiles: DeskoyProfile[] = [];
+let profileDialogResolve: ((result: ProfileDialogResult) => void) | null = null;
+let profileDialogHasInput = false;
+let profileDialogReturnFocus: HTMLElement | null = null;
 /** Mirrors settings.enabled — global hotkey only works when true; hotkey capture UI only when true. */
 let deskoyArmed = false;
 /** When true, custom URL/file overrides the Cover mode dropdown. */
@@ -272,9 +469,11 @@ function markUnsaved() {
   if (current === savedSnapshot) {
     hasUnsavedChanges = false;
     settingsStatus.classList.remove('show');
+    renderProfileTrigger();
     return;
   }
   hasUnsavedChanges = true;
+  renderProfileTrigger();
   setStatus(settingsStatus, 'Unsaved changes', 'muted', true);
 }
 
@@ -427,6 +626,8 @@ const coverOptions: Record<
     cover: 'black',
   },
 };
+const builtInCovers = ['excel', 'vscode', 'docs', 'jira', 'bi', 'black'] as const;
+const defaultProfileId = 'default';
 
 function hotkeyHintIdleText(): string {
   if (!deskoyArmed) return 'Toggle Deskoy first';
@@ -639,7 +840,192 @@ function setCustomSourceMode(mode: 'url' | 'file') {
   refreshCustomCoverUi();
 }
 
-function buildSettingsPatch(): DeskoySaveSettingsPatch {
+function normalizeBuiltInCover(value: string | undefined): DeskoyBuiltInCover {
+  return builtInCovers.includes(value as DeskoyBuiltInCover) ? (value as DeskoyBuiltInCover) : 'excel';
+}
+
+function normalizeProfileName(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').slice(0, 40);
+}
+
+function makeProfileId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36) || 'profile';
+  let id = slug === defaultProfileId ? 'profile-default' : slug;
+  let suffix = 2;
+  while (profiles.some((profile) => profile.id === id)) {
+    id = `${slug}-${suffix}`;
+    suffix += 1;
+  }
+  return id;
+}
+
+function profileSettingsFromPatch(patch: DeskoySaveSettingsPatch): DeskoyProfileSettings {
+  return {
+    coverMode: (patch.coverMode ?? 'excel') as DeskoyProfileSettings['coverMode'],
+    cover: (patch.cover ?? 'excel') as DeskoyProfileSettings['cover'],
+    coverDisplay: patch.coverDisplay ?? 'all',
+    coverUrl: patch.coverUrl ?? '',
+    coverFilePath: patch.coverFilePath ?? '',
+    audioMute: Boolean(patch.audioMute),
+    whitelist: Array.isArray(patch.whitelist) ? [...patch.whitelist] : [],
+    useCustomCover: Boolean(patch.useCustomCover),
+    autoCoverBlocked: Boolean(patch.autoCoverBlocked),
+    blockedApps: Array.isArray(patch.blockedApps) ? [...patch.blockedApps] : [],
+    blockedWebsites: Array.isArray(patch.blockedWebsites) ? [...patch.blockedWebsites] : [],
+    blockedTitleKeywords: Array.isArray(patch.blockedTitleKeywords) ? [...patch.blockedTitleKeywords] : [],
+  };
+}
+
+function profileSettingsFromSettings(settings: DeskoySettings): DeskoyProfileSettings {
+  return {
+    coverMode: settings.coverMode,
+    cover: settings.cover,
+    coverDisplay: settings.coverDisplay,
+    coverUrl: settings.coverUrl,
+    coverFilePath: settings.coverFilePath,
+    audioMute: settings.audioMute,
+    whitelist: [...settings.whitelist],
+    useCustomCover: settings.useCustomCover,
+    autoCoverBlocked: settings.autoCoverBlocked,
+    blockedApps: [...settings.blockedApps],
+    blockedWebsites: [...settings.blockedWebsites],
+    blockedTitleKeywords: [...settings.blockedTitleKeywords],
+  };
+}
+
+function freshProfileSettings(): DeskoyProfileSettings {
+  return {
+    coverMode: 'excel',
+    cover: 'excel',
+    coverDisplay: 'all',
+    coverUrl: '',
+    coverFilePath: '',
+    audioMute: false,
+    whitelist: [],
+    useCustomCover: false,
+    autoCoverBlocked: false,
+    blockedApps: [],
+    blockedWebsites: [],
+    blockedTitleKeywords: [],
+  };
+}
+
+function patchFromProfileSettings(settings: DeskoyProfileSettings): DeskoySaveSettingsPatch {
+  return {
+    coverMode: settings.coverMode,
+    cover: settings.cover,
+    coverDisplay: settings.coverDisplay,
+    coverUrl: settings.coverUrl,
+    coverFilePath: settings.coverFilePath,
+    audioMute: settings.audioMute,
+    whitelist: [...settings.whitelist],
+    useCustomCover: settings.useCustomCover,
+    autoCoverBlocked: settings.autoCoverBlocked,
+    blockedApps: [...settings.blockedApps],
+    blockedWebsites: [...settings.blockedWebsites],
+    blockedTitleKeywords: [...settings.blockedTitleKeywords],
+  };
+}
+
+function normalizeProfilesFromSettings(settings: DeskoySettings): DeskoyProfile[] {
+  const seen = new Set<string>();
+  const normalized = (Array.isArray(settings.profiles) ? settings.profiles : [])
+    .map((profile) => ({
+      id: profile.id.trim(),
+      name: normalizeProfileName(profile.name) || 'Untitled',
+      settings: profile.settings,
+    }))
+    .filter((profile) => {
+      if (!profile.id || seen.has(profile.id)) return false;
+      seen.add(profile.id);
+      return true;
+    });
+
+  if (!normalized.some((profile) => profile.id === defaultProfileId)) {
+    normalized.unshift({
+      id: defaultProfileId,
+      name: 'Default',
+      settings: profileSettingsFromSettings(settings),
+    });
+  }
+
+  return normalized.sort((a, b) => {
+    if (a.id === defaultProfileId) return -1;
+    if (b.id === defaultProfileId) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function userProfiles(): DeskoyProfile[] {
+  return profiles.filter((profile) => profile.id !== defaultProfileId);
+}
+
+function profileSettingsSignature(settings: DeskoyProfileSettings): string {
+  return JSON.stringify({
+    coverMode: settings.coverMode,
+    cover: settings.cover,
+    coverDisplay: settings.coverDisplay,
+    coverUrl: settings.coverUrl,
+    coverFilePath: settings.coverFilePath,
+    audioMute: Boolean(settings.audioMute),
+    whitelist: [...settings.whitelist],
+    useCustomCover: Boolean(settings.useCustomCover),
+    autoCoverBlocked: Boolean(settings.autoCoverBlocked),
+    blockedApps: [...settings.blockedApps],
+    blockedWebsites: [...settings.blockedWebsites],
+    blockedTitleKeywords: [...settings.blockedTitleKeywords],
+  });
+}
+
+function findMatchingUserProfile(settings: DeskoyProfileSettings): DeskoyProfile | undefined {
+  const signature = profileSettingsSignature(settings);
+  return userProfiles().find((profile) => profileSettingsSignature(profile.settings) === signature);
+}
+
+function activeUserProfile(): DeskoyProfile | undefined {
+  return userProfiles().find((profile) => profile.id === activeProfileId);
+}
+
+function profilesWithDefaultSnapshot(
+  sourceProfiles: DeskoyProfile[],
+  patch: DeskoySaveSettingsPatch,
+): DeskoyProfile[] {
+  const settings = profileSettingsFromPatch(patch);
+  let hasDefault = false;
+  const nextProfiles = sourceProfiles.map((profile) => {
+    if (profile.id !== defaultProfileId) return profile;
+    hasDefault = true;
+    return { ...profile, name: 'Default', settings };
+  });
+
+  if (!hasDefault) {
+    nextProfiles.unshift({ id: defaultProfileId, name: 'Default', settings });
+  }
+
+  return nextProfiles;
+}
+
+function activeProfileIdForPatch(patch: DeskoySaveSettingsPatch): string {
+  return activeUserProfile()?.id ?? findMatchingUserProfile(profileSettingsFromPatch(patch))?.id ?? defaultProfileId;
+}
+
+function profilesForSave(patch: DeskoySaveSettingsPatch): DeskoyProfile[] {
+  const activeProfile = activeUserProfile();
+  const nextProfiles = activeProfile
+    ? profiles.map((profile) =>
+        profile.id === activeProfile.id
+          ? { ...profile, settings: profileSettingsFromPatch(patch) }
+          : profile,
+      )
+    : profiles;
+  return profilesWithDefaultSnapshot(nextProfiles, patch);
+}
+
+function buildCoreSettingsPatch(): DeskoySaveSettingsPatch {
   const newHotkey = normalizeTypedHotkey(currentHotkey);
   const selectedBuiltInMode = (coverMode.value as DeskoyBuiltInCover) || 'excel';
   const trimmedUrl = coverUrl.value.trim();
@@ -676,9 +1062,277 @@ function buildSettingsPatch(): DeskoySaveSettingsPatch {
     whitelist: [...whitelistApps],
     useCustomCover,
     autoCoverBlocked: autoBlockedOn,
+    blockedApps: [...blockedAppRules],
     blockedWebsites: [...blockedWebsiteRules],
     blockedTitleKeywords: [...blockedTitleKeywords],
   };
+}
+
+function buildSettingsPatch(): DeskoySaveSettingsPatch {
+  const patch = buildCoreSettingsPatch();
+  return {
+    ...patch,
+    activeProfileId: activeProfileIdForPatch(patch),
+    profiles: profilesForSave(patch),
+  };
+}
+
+function renderProfileTrigger() {
+  const savedPresets = userProfiles();
+  const currentPreset = activeUserProfile() ?? findMatchingUserProfile(profileSettingsFromPatch(buildCoreSettingsPatch()));
+  profileLabel.textContent =
+    savedPresets.length === 0 ? 'Create profile' : currentPreset?.name ?? 'Custom';
+  profileTrigger.classList.toggle('empty', savedPresets.length === 0);
+  profileTrigger.setAttribute('aria-haspopup', savedPresets.length === 0 ? 'dialog' : 'menu');
+}
+
+function renderProfileMenu() {
+  const currentPreset = activeUserProfile() ?? findMatchingUserProfile(profileSettingsFromPatch(buildCoreSettingsPatch()));
+  const savedPresets = userProfiles();
+  const profileItems = savedPresets
+    .map(
+      (profile) => `<button type="button" class="profile-menu-item${profile.id === currentPreset?.id ? ' active' : ''}" data-profile-id="${escapeHtml(profile.id)}" role="menuitem">
+        <span>${escapeHtml(profile.name)}</span>
+      </button>`,
+    )
+    .join('');
+  const separator = savedPresets.length ? '<div class="profile-menu-sep"></div>' : '';
+  const deleteAction = currentPreset
+    ? `<button type="button" class="profile-menu-item danger" data-profile-action="delete" role="menuitem">Delete "${escapeHtml(currentPreset.name)}"</button>`
+    : '';
+  profileMenu.innerHTML = `
+    ${profileItems}
+    ${separator}
+    <button type="button" class="profile-menu-item" data-profile-action="save" role="menuitem">${savedPresets.length === 0 ? 'Create profile' : 'Create new profile'}</button>
+    ${deleteAction}
+  `;
+}
+
+function setProfileMenuOpen(open: boolean) {
+  profileMenu.classList.toggle('open', open);
+  profileTrigger.setAttribute('aria-expanded', String(open));
+}
+
+function closeProfileDialog(result: ProfileDialogResult) {
+  if (!profileDialogResolve) return;
+  const resolve = profileDialogResolve;
+  profileDialogResolve = null;
+  profileDialogOverlay.classList.remove('show');
+  profileDialogInput.classList.remove('sp-input--error');
+  profileDialogError.textContent = '';
+  profileDialogReturnFocus?.focus();
+  profileDialogReturnFocus = null;
+  resolve(result);
+}
+
+function confirmProfileDialog() {
+  if (!profileDialogHasInput) {
+    closeProfileDialog({ confirmed: true });
+    return;
+  }
+
+  const value = normalizeProfileName(profileDialogInput.value);
+  if (!value) {
+    profileDialogInput.classList.add('sp-input--error');
+    profileDialogError.textContent = 'Enter a profile name.';
+    profileDialogInput.focus();
+    return;
+  }
+  closeProfileDialog({ confirmed: true, value });
+}
+
+function showProfileDialog(options: ProfileDialogOptions): Promise<ProfileDialogResult> {
+  if (profileDialogResolve) {
+    closeProfileDialog({ confirmed: false });
+  }
+
+  profileDialogTitle.textContent = options.title;
+  profileDialogMessage.textContent = options.message;
+  profileDialogCancel.textContent = options.cancelLabel ?? 'Cancel';
+  profileDialogConfirm.textContent = options.confirmLabel;
+  profileDialogConfirm.classList.toggle('danger', Boolean(options.destructive));
+  profileDialogIcon.innerHTML = options.destructive
+    ? PROFILE_DIALOG_DELETE_ICON
+    : PROFILE_DIALOG_ADD_ICON;
+  profileDialogHasInput = Boolean(options.input);
+  profileDialogField.hidden = !options.input;
+  profileDialogInput.classList.remove('sp-input--error');
+  profileDialogError.textContent = '';
+
+  if (options.input) {
+    profileDialogInputLabel.textContent = options.input.label;
+    profileDialogInput.placeholder = options.input.placeholder ?? '';
+    profileDialogInput.value = options.input.value ?? '';
+  }
+
+  profileDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : profileTrigger;
+  profileDialogOverlay.classList.add('show');
+
+  window.requestAnimationFrame(() => {
+    if (options.input) {
+      profileDialogInput.focus();
+      profileDialogInput.select();
+      return;
+    }
+    profileDialogConfirm.focus();
+  });
+
+  return new Promise((resolve) => {
+    profileDialogResolve = resolve;
+  });
+}
+
+function applyProfileSettingsToUi(settings: DeskoyProfileSettings) {
+  coverDisplay = normalizeCoverDisplayValue(settings.coverDisplay);
+  renderCoverDisplayPicker();
+  coverUrl.value = settings.coverUrl ?? '';
+  coverFilePath.value = settings.coverFilePath ?? '';
+  useCustomCover = Boolean(settings.useCustomCover);
+  setToggle(toggleUseCustom, useCustomCover);
+  const builtIn = builtInCovers.includes(settings.coverMode as DeskoyBuiltInCover)
+    ? (settings.coverMode as DeskoyBuiltInCover)
+    : normalizeBuiltInCover(settings.cover);
+  setCoverMode(builtIn);
+  setCustomSourceMode(settings.coverMode === 'file' ? 'file' : 'url');
+  muteAudioOn = Boolean(settings.audioMute);
+  setToggle(toggleMuteAudio, muteAudioOn);
+  whitelistApps = Array.isArray(settings.whitelist) ? [...settings.whitelist] : [];
+  blockedAppRules = Array.isArray(settings.blockedApps) ? [...settings.blockedApps] : [];
+  autoBlockedOn = Boolean(settings.autoCoverBlocked);
+  setToggle(toggleAutoBlocked, autoBlockedOn);
+  setBlockedPanelCollapsed(!autoBlockedOn);
+  blockedWebsiteRules = Array.isArray(settings.blockedWebsites) ? [...settings.blockedWebsites] : [];
+  blockedTitleKeywords = Array.isArray(settings.blockedTitleKeywords) ? [...settings.blockedTitleKeywords] : [];
+  blockedWebsites.value = blockedWebsiteRules.join('\n');
+  blockedKeywords.value = blockedTitleKeywords.join('\n');
+  refreshGeneralPanel();
+}
+
+async function applyProfile(profileId: string) {
+  const currentPreset = activeUserProfile() ?? findMatchingUserProfile(profileSettingsFromPatch(buildCoreSettingsPatch()));
+  if (profileId === currentPreset?.id && !hasUnsavedChanges) return;
+  if (hasUnsavedChanges) {
+    const switchResult = await showProfileDialog({
+      title: 'Switch profile?',
+      message: 'Unsaved changes will be lost.',
+      confirmLabel: 'Switch',
+    });
+    if (!switchResult.confirmed) return;
+  }
+  const profile = profiles.find((item) => item.id === profileId);
+  if (!profile || profile.id === defaultProfileId) return;
+  const profilePatch: DeskoySaveSettingsPatch = { ...profile.settings };
+  const patch: DeskoySaveSettingsPatch = {
+    ...profilePatch,
+    activeProfileId: profile.id,
+    profiles: profilesWithDefaultSnapshot(profiles, profilePatch),
+  };
+  const result = await window.deskoy.saveSettings(patch);
+  if (!result.ok) {
+    setStatus(settingsStatus, 'Could not switch profile.', 'error');
+    return;
+  }
+  if (Array.isArray(patch.profiles)) profiles = patch.profiles;
+  activeProfileId = profile.id;
+  applyProfileSettingsToUi(profile.settings);
+  hasUnsavedChanges = false;
+  savedSnapshot = JSON.stringify(buildSettingsPatch());
+  renderProfileTrigger();
+  renderProfileMenu();
+  setStatus(settingsStatus, `${profile.name} profile applied`, 'ok');
+}
+
+async function saveCurrentAsProfile() {
+  const hasProfiles = userProfiles().length > 0;
+  if (hasProfiles && hasUnsavedChanges) {
+    const createResult = await showProfileDialog({
+      title: 'Create new profile?',
+      message: 'Unsaved changes in the current profile will be lost.',
+      confirmLabel: 'Continue',
+    });
+    if (!createResult.confirmed) return;
+  }
+  const nameResult = await showProfileDialog({
+    title: hasProfiles ? 'Create new profile' : 'Create profile',
+    message: 'Name this profile so you can switch back to it later.',
+    confirmLabel: 'Create',
+    input: {
+      label: 'Profile name',
+      placeholder: 'Work',
+    },
+  });
+  const name = normalizeProfileName(nameResult.value ?? '');
+  if (!nameResult.confirmed) return;
+  if (!name) return;
+  if (name.toLowerCase() === defaultProfileId) {
+    setStatus(settingsStatus, 'Use a different profile name.', 'error');
+    return;
+  }
+  const currentPatch = buildCoreSettingsPatch();
+  const settings = hasProfiles ? freshProfileSettings() : profileSettingsFromPatch(currentPatch);
+  const profilePatch = hasProfiles ? patchFromProfileSettings(settings) : currentPatch;
+  const existing = userProfiles().find((profile) => profile.name.toLowerCase() === name.toLowerCase());
+  let nextProfiles: DeskoyProfile[];
+  let nextActiveProfileId: string;
+
+  if (existing) {
+    setStatus(settingsStatus, 'A profile with that name already exists.', 'error');
+    return;
+  } else {
+    const profile = { id: makeProfileId(name), name, settings };
+    nextActiveProfileId = profile.id;
+    nextProfiles = [...profiles, profile];
+  }
+
+  const patch: DeskoySaveSettingsPatch = {
+    ...profilePatch,
+    activeProfileId: nextActiveProfileId,
+    profiles: profilesWithDefaultSnapshot(nextProfiles, profilePatch),
+  };
+  const result = await window.deskoy.saveSettings(patch);
+  if (!result.ok) {
+    setStatus(settingsStatus, 'Profile could not be created.', 'error');
+    return;
+  }
+  if (Array.isArray(patch.profiles)) profiles = patch.profiles;
+  activeProfileId = nextActiveProfileId;
+  if (hasProfiles) applyProfileSettingsToUi(settings);
+  hasUnsavedChanges = false;
+  savedSnapshot = JSON.stringify(buildSettingsPatch());
+  renderProfileTrigger();
+  renderProfileMenu();
+  setStatus(settingsStatus, 'Profile created', 'ok');
+}
+
+async function deleteActiveProfile() {
+  const profile = activeUserProfile() ?? findMatchingUserProfile(profileSettingsFromPatch(buildCoreSettingsPatch()));
+  if (!profile) return;
+  const deleteResult = await showProfileDialog({
+    title: 'Delete profile?',
+    message: `"${profile.name}" will be removed. Your current cover settings will stay the same.`,
+    confirmLabel: 'Delete',
+    destructive: true,
+  });
+  if (!deleteResult.confirmed) return;
+  const currentPatch = buildCoreSettingsPatch();
+  const nextProfiles = profiles.filter((item) => item.id !== profile.id);
+  const patch: DeskoySaveSettingsPatch = {
+    ...currentPatch,
+    activeProfileId: defaultProfileId,
+    profiles: profilesWithDefaultSnapshot(nextProfiles, currentPatch),
+  };
+  const result = await window.deskoy.saveSettings(patch);
+  if (!result.ok) {
+    setStatus(settingsStatus, 'Profile could not be deleted.', 'error');
+    return;
+  }
+  if (Array.isArray(patch.profiles)) profiles = patch.profiles;
+  activeProfileId = defaultProfileId;
+  hasUnsavedChanges = false;
+  savedSnapshot = JSON.stringify(buildSettingsPatch());
+  renderProfileTrigger();
+  renderProfileMenu();
+  setStatus(settingsStatus, 'Profile deleted', 'ok');
 }
 
 async function refresh() {
@@ -699,13 +1353,13 @@ async function refresh() {
   coverFilePath.value = settings.coverFilePath ?? '';
   useCustomCover = Boolean(settings.useCustomCover);
   setToggle(toggleUseCustom, useCustomCover);
-  const builtInCovers = ['excel', 'vscode', 'docs', 'jira', 'bi', 'black'] as const;
   const builtIn =
     builtInCovers.includes(settings.coverMode as (typeof builtInCovers)[number])
       ? settings.coverMode
       : (settings.cover ?? 'excel');
   setCoverMode(builtIn);
   whitelistApps = [...settings.whitelist];
+  blockedAppRules = Array.isArray(settings.blockedApps) ? [...settings.blockedApps] : [];
   setCustomSourceMode(settings.coverMode === 'file' ? 'file' : 'url');
   muteAudioOn = Boolean(settings.audioMute);
   setToggle(toggleMuteAudio, muteAudioOn);
@@ -724,10 +1378,16 @@ async function refresh() {
   applyCompactMode(Boolean(settings.compactMode));
   applyFontSize(settings.fontSize);
   applyReduceMotion(Boolean(settings.reduceMotion));
+  profiles = normalizeProfilesFromSettings(settings);
+  activeProfileId = profiles.some((profile) => profile.id === settings.activeProfileId)
+    ? settings.activeProfileId
+    : defaultProfileId;
   refreshGeneralPanel();
 
   hasUnsavedChanges = false;
   savedSnapshot = JSON.stringify(buildSettingsPatch());
+  renderProfileTrigger();
+  renderProfileMenu();
 }
 
 async function refreshActiveState() {
@@ -755,6 +1415,50 @@ window.addEventListener('click', (e) => {
   if (!coverDropdown.contains(e.target as Node)) {
     coverMenu.classList.remove('open');
   }
+  if (!profileDropdown.contains(e.target as Node)) {
+    setProfileMenuOpen(false);
+  }
+});
+
+profileTrigger.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (userProfiles().length === 0) {
+    void saveCurrentAsProfile();
+    return;
+  }
+  renderProfileMenu();
+  setProfileMenuOpen(!profileMenu.classList.contains('open'));
+});
+
+profileMenu.addEventListener('click', (e) => {
+  const button = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+  if (!button || !profileMenu.contains(button)) return;
+  const profileId = button.dataset.profileId;
+  const action = button.dataset.profileAction;
+  setProfileMenuOpen(false);
+  if (profileId) {
+    void applyProfile(profileId);
+    return;
+  }
+  if (action === 'save') {
+    void saveCurrentAsProfile();
+    return;
+  }
+  if (action === 'delete') {
+    void deleteActiveProfile();
+  }
+});
+
+profileDialogCancel.addEventListener('click', () => closeProfileDialog({ confirmed: false }));
+profileDialogConfirm.addEventListener('click', confirmProfileDialog);
+profileDialogInput.addEventListener('input', () => {
+  profileDialogInput.classList.remove('sp-input--error');
+  profileDialogError.textContent = '';
+});
+profileDialogOverlay.addEventListener('click', (e) => {
+  if (e.target === profileDialogOverlay) {
+    closeProfileDialog({ confirmed: false });
+  }
 });
 
 hotkeyRow.addEventListener('click', () => {
@@ -766,6 +1470,22 @@ hotkeyRow.addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (profileDialogOverlay.classList.contains('show')) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeProfileDialog({ confirmed: false });
+      return;
+    }
+    if (e.key === 'Enter' && document.activeElement !== profileDialogCancel) {
+      e.preventDefault();
+      confirmProfileDialog();
+      return;
+    }
+  }
+  if (e.key === 'Escape' && profileMenu.classList.contains('open')) {
+    setProfileMenuOpen(false);
+    return;
+  }
   if (e.key === 'Escape' && coverMenu.classList.contains('open')) {
     coverMenu.classList.remove('open');
     return;
@@ -896,11 +1616,16 @@ btnSave.addEventListener('click', async () => {
   if (btnSave.disabled) return;
   btnSave.disabled = true;
   try {
-    const res = await window.deskoy.saveSettings(buildSettingsPatch());
+    const patch = buildSettingsPatch();
+    const res = await window.deskoy.saveSettings(patch);
     if (res.ok) {
+      if (Array.isArray(patch.profiles)) profiles = patch.profiles;
+      if (typeof patch.activeProfileId === 'string') activeProfileId = patch.activeProfileId;
       setStatus(settingsStatus, 'Saved', 'ok');
       hasUnsavedChanges = false;
       savedSnapshot = JSON.stringify(buildSettingsPatch());
+      renderProfileTrigger();
+      renderProfileMenu();
     } else {
       const msg =
         res.error === 'hotkey_unavailable'
@@ -952,10 +1677,14 @@ window.deskoy.onStateChanged((s: { active: boolean; paused?: boolean }) => {
 
 window.addEventListener('focus', () => {
   void refreshActiveState();
+  void refreshUpdateNotice();
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) void refreshActiveState();
+  if (!document.hidden) {
+    void refreshActiveState();
+    void refreshUpdateNotice();
+  }
 });
 
 // Maximize removed (fixed-size window).
@@ -972,6 +1701,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
   void refresh();
+  void refreshUpdateNotice();
   void window.deskoy.getAppVersion().then((meta) => {
   const vText = `v${meta.version}`;
   appVersion.textContent = vText;
@@ -1023,6 +1753,14 @@ btnGear.addEventListener('click', () => {
 spClose.addEventListener('click', closeSettingsPanel);
 spBackdrop.addEventListener('click', closeSettingsPanel);
 
+function openUpdateNoticePage() {
+  if (upgradeRequiredActive) return;
+  if (!isSettingsPanelOpen()) openSettingsPanel();
+  setSettingsPage('updates');
+}
+
+updateNotice.addEventListener('click', openUpdateNoticePage);
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isSettingsPanelOpen()) {
     e.stopPropagation();
@@ -1072,6 +1810,15 @@ function applyReduceMotion(on: boolean) {
   setToggle(spToggleReduceMotion, on);
 }
 
+async function saveAppearanceSetting(patch: DeskoySaveSettingsPatch) {
+  try {
+    const result = await window.deskoy.saveSettings(patch);
+    if (!result.ok) setStatus(settingsStatus, 'Customization setting could not be saved.', 'error');
+  } catch {
+    setStatus(settingsStatus, 'Customization setting could not be saved.', 'error');
+  }
+}
+
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
   if (currentTheme === 'system') applyTheme('system');
 });
@@ -1081,7 +1828,7 @@ spThemeTrack.addEventListener('click', (e) => {
   if (!btn || !btn.dataset.theme) return;
   const theme = btn.dataset.theme as 'dark' | 'light' | 'system';
   applyTheme(theme);
-  void window.deskoy.saveSettings({ theme });
+  void saveAppearanceSetting({ theme });
 });
 
 spFontSizeTrack.addEventListener('click', (e) => {
@@ -1089,19 +1836,19 @@ spFontSizeTrack.addEventListener('click', (e) => {
   if (!btn || !btn.dataset.fontSize) return;
   const fontSize = normalizeFontSize(btn.dataset.fontSize);
   applyFontSize(fontSize);
-  void window.deskoy.saveSettings({ fontSize });
+  void saveAppearanceSetting({ fontSize });
 });
 
 spToggleCompactMode.addEventListener('click', () => {
   const compactMode = !compactModeOn;
   applyCompactMode(compactMode);
-  void window.deskoy.saveSettings({ compactMode });
+  void saveAppearanceSetting({ compactMode });
 });
 
 spToggleReduceMotion.addEventListener('click', () => {
   const reduceMotion = !reduceMotionOn;
   applyReduceMotion(reduceMotion);
-  void window.deskoy.saveSettings({ reduceMotion });
+  void saveAppearanceSetting({ reduceMotion });
 });
 
 /* ── Feedback form ──────────────────────────────── */
@@ -1278,7 +2025,7 @@ function setSettingsPage(page: SettingsPage) {
 
   const titleMap: Record<SettingsPage, string> = {
     general: 'Settings',
-    appearance: 'Appearance',
+    appearance: 'Customization',
     feedback: 'Feedback',
     bug: 'Bug Report',
     logs: 'Logs',

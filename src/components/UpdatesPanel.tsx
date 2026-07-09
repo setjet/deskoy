@@ -138,7 +138,7 @@ function UpdatesPanel(): ReactElement {
         installing: false,
         installStatus:
           nativeAvailable && native.configured
-            ? 'Install directly from Deskoy. The app may close while Windows applies the update.'
+            ? 'Update directly in Deskoy. The app may close during installation.'
             : 'Download the latest version to get these changes.',
       });
     } catch {
@@ -255,7 +255,7 @@ function UpdatesPanel(): ReactElement {
           disabled={state.installing || (!state.installable && !state.downloadUrl)}
           onClick={() => void handleUpdateAction()}
         >
-          {state.installing ? 'Installing...' : state.installable ? 'Install Update' : 'Download'}
+          {state.installing ? 'Installing...' : state.installable ? 'Install' : 'Download'}
         </button>
       </div>
     </div>

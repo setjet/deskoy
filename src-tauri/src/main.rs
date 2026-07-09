@@ -74,6 +74,84 @@ struct DeskoySettings {
     font_size: String,
     #[serde(default)]
     reduce_motion: bool,
+    #[serde(default = "default_active_profile_id")]
+    active_profile_id: String,
+    #[serde(default)]
+    profiles: Vec<DeskoyProfile>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeskoyProfile {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    settings: DeskoyProfileSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeskoyProfileSettings {
+    #[serde(default = "default_cover_mode")]
+    cover_mode: String,
+    #[serde(default = "default_cover_mode")]
+    cover: String,
+    #[serde(default = "default_cover_display")]
+    cover_display: String,
+    #[serde(default)]
+    cover_url: String,
+    #[serde(default)]
+    cover_file_path: String,
+    #[serde(default)]
+    audio_mute: bool,
+    #[serde(default)]
+    whitelist: Vec<String>,
+    #[serde(default)]
+    use_custom_cover: bool,
+    #[serde(default)]
+    auto_cover_blocked: bool,
+    #[serde(default)]
+    blocked_apps: Vec<String>,
+    #[serde(default)]
+    blocked_websites: Vec<String>,
+    #[serde(default)]
+    blocked_title_keywords: Vec<String>,
+}
+
+impl Default for DeskoyProfileSettings {
+    fn default() -> Self {
+        Self {
+            cover_mode: "excel".into(),
+            cover: "excel".into(),
+            cover_display: default_cover_display(),
+            cover_url: String::new(),
+            cover_file_path: String::new(),
+            audio_mute: false,
+            whitelist: vec!["Teams".into(), "Slack".into(), "Outlook".into()],
+            use_custom_cover: false,
+            auto_cover_blocked: false,
+            blocked_apps: vec![
+                "1Password".into(),
+                "Bitwarden".into(),
+                "KeePass".into(),
+                "LastPass".into(),
+                "Outlook".into(),
+                "Discord".into(),
+            ],
+            blocked_websites: vec![],
+            blocked_title_keywords: vec![],
+        }
+    }
+}
+
+fn default_active_profile_id() -> String {
+    "default".into()
+}
+
+fn default_cover_mode() -> String {
+    "excel".into()
 }
 
 fn default_cover_display() -> String {
@@ -112,6 +190,8 @@ impl Default for DeskoySettings {
             compact_mode: false,
             font_size: default_font_size(),
             reduce_motion: false,
+            active_profile_id: default_active_profile_id(),
+            profiles: vec![],
         }
     }
 }
@@ -495,6 +575,97 @@ fn normalize_settings(mut settings: DeskoySettings) -> DeskoySettings {
         settings.blocked_websites = normalized_unique_lines(settings.blocked_websites);
         settings.blocked_title_keywords = normalized_unique_lines(settings.blocked_title_keywords);
     }
+    let profiles = std::mem::take(&mut settings.profiles);
+    settings.profiles = normalize_profiles(profiles, &settings);
+    if !settings
+        .profiles
+        .iter()
+        .any(|profile| profile.id == settings.active_profile_id)
+    {
+        settings.active_profile_id = default_active_profile_id();
+    }
+    settings
+}
+
+fn normalize_profiles(
+    profiles: Vec<DeskoyProfile>,
+    settings: &DeskoySettings,
+) -> Vec<DeskoyProfile> {
+    let mut normalized = Vec::new();
+    for profile in profiles {
+        let id = normalize_profile_id(&profile.id);
+        if id.is_empty() || normalized.iter().any(|item: &DeskoyProfile| item.id == id) {
+            continue;
+        }
+        let name = profile.name.trim();
+        normalized.push(DeskoyProfile {
+            id,
+            name: if name.is_empty() {
+                "Untitled".into()
+            } else {
+                name.chars().take(40).collect()
+            },
+            settings: normalize_profile_settings(profile.settings),
+        });
+    }
+
+    if !normalized.iter().any(|profile| profile.id == "default") {
+        normalized.insert(0, default_profile_from_settings(settings));
+    }
+    normalized.sort_by_key(|profile| {
+        if profile.id == "default" {
+            (0, String::new())
+        } else {
+            (1, profile.name.to_lowercase())
+        }
+    });
+    normalized
+}
+
+fn normalize_profile_id(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .take(64)
+        .collect()
+}
+
+fn default_profile_from_settings(settings: &DeskoySettings) -> DeskoyProfile {
+    DeskoyProfile {
+        id: default_active_profile_id(),
+        name: "Default".into(),
+        settings: profile_settings_from_settings(settings),
+    }
+}
+
+fn profile_settings_from_settings(settings: &DeskoySettings) -> DeskoyProfileSettings {
+    DeskoyProfileSettings {
+        cover_mode: settings.cover_mode.clone(),
+        cover: settings.cover.clone(),
+        cover_display: settings.cover_display.clone(),
+        cover_url: settings.cover_url.clone(),
+        cover_file_path: settings.cover_file_path.clone(),
+        audio_mute: settings.audio_mute,
+        whitelist: settings.whitelist.clone(),
+        use_custom_cover: settings.use_custom_cover,
+        auto_cover_blocked: settings.auto_cover_blocked,
+        blocked_apps: settings.blocked_apps.clone(),
+        blocked_websites: settings.blocked_websites.clone(),
+        blocked_title_keywords: settings.blocked_title_keywords.clone(),
+    }
+}
+
+fn normalize_profile_settings(mut settings: DeskoyProfileSettings) -> DeskoyProfileSettings {
+    settings.cover_display = normalize_cover_display(&settings.cover_display);
+    if !settings.use_custom_cover && (settings.cover_mode == "url" || settings.cover_mode == "file")
+    {
+        settings.use_custom_cover = true;
+    }
+    settings.whitelist = normalized_unique_lines(settings.whitelist);
+    settings.blocked_apps = normalized_unique_lines(settings.blocked_apps);
+    settings.blocked_websites = normalized_unique_lines(settings.blocked_websites);
+    settings.blocked_title_keywords = normalized_unique_lines(settings.blocked_title_keywords);
     settings
 }
 
@@ -655,7 +826,7 @@ fn resume_deskoy_inner(app: &AppHandle) -> Value {
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Settings", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Deskoy", true, None::<&str>)?;
     let toggle_item = MenuItem::with_id(app, "toggle", "Toggle Deskoy", true, None::<&str>)?;
     let pause_5 = MenuItem::with_id(app, "pause_5", "Pause for 5 minutes", true, None::<&str>)?;
     let pause_15 = MenuItem::with_id(app, "pause_15", "Pause for 15 minutes", true, None::<&str>)?;
@@ -671,11 +842,11 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &toggle_item,
             &PredefinedMenuItem::separator(app)?,
+            &resume,
             &pause_5,
             &pause_15,
             &pause_30,
             &pause_restart,
-            &resume,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -2709,8 +2880,14 @@ async fn check_app_update(app: AppHandle) -> Value {
         }),
     };
 
-    app_state(&app).state.lock().unwrap().app_update_cache =
-        Some((Instant::now(), result.clone()));
+    if result
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        app_state(&app).state.lock().unwrap().app_update_cache =
+            Some((Instant::now(), result.clone()));
+    }
     result
 }
 

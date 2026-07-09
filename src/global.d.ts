@@ -51,6 +51,25 @@ declare global {
         compactMode: boolean;
         fontSize: 'small' | 'default' | 'large';
         reduceMotion: boolean;
+        activeProfileId: string;
+        profiles: Array<{
+          id: string;
+          name: string;
+          settings: {
+            coverMode: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
+            cover: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black';
+            coverDisplay: string;
+            coverUrl: string;
+            coverFilePath: string;
+            audioMute: boolean;
+            whitelist: string[];
+            useCustomCover: boolean;
+            autoCoverBlocked: boolean;
+            blockedApps: string[];
+            blockedWebsites: string[];
+            blockedTitleKeywords: string[];
+          };
+        }>;
       }>;
       getProtectionLogs: () => Promise<
         Array<{
@@ -85,6 +104,25 @@ declare global {
           compactMode: boolean;
           fontSize: 'small' | 'default' | 'large';
           reduceMotion: boolean;
+          activeProfileId: string;
+          profiles: Array<{
+            id: string;
+            name: string;
+            settings: {
+              coverMode: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black' | 'url' | 'file';
+              cover: 'excel' | 'vscode' | 'docs' | 'jira' | 'bi' | 'black';
+              coverDisplay: string;
+              coverUrl: string;
+              coverFilePath: string;
+              audioMute: boolean;
+              whitelist: string[];
+              useCustomCover: boolean;
+              autoCoverBlocked: boolean;
+              blockedApps: string[];
+              blockedWebsites: string[];
+              blockedTitleKeywords: string[];
+            };
+          }>;
         }>,
       ) => Promise<{ ok: boolean; error?: string }>;
       pickCoverFile: () => Promise<{ ok: boolean; path: string }>;

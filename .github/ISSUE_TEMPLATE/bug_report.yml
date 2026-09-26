@@ -1,0 +1,19 @@
+name: Bug report
+description: Report a Deskoy product issue (no licence keys or private data)
+title: "Bug: "
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include steps to reproduce and the expected result. Remove sensitive information.
+    validations:
+      required: true
+  - type: input
+    id: deskoy_version
+    attributes:
+      label: Deskoy version
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows version

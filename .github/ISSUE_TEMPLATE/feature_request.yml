@@ -1,0 +1,10 @@
+name: Feature request
+description: Suggest an improvement to Deskoy
+title: "Feature: "
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Deskoy to do?
+    validations:
+      required: true

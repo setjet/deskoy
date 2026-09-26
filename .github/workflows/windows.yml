@@ -1,0 +1,42 @@
+name: Windows app and CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Use stable Rust
+        run: rustup default stable
+      - name: Install JavaScript dependencies
+        run: npm.cmd ci
+      - name: Check TypeScript
+        run: npm.cmd run lint
+      - name: Test desktop UI
+        run: |
+          npm.cmd run test:defender-ui
+          npm.cmd run test:licensing-ui
+          npm.cmd run test:local-assets
+      - name: Build frontend
+        run: npm.cmd run build
+      - name: Test Windows CLI
+        run: cargo test --manifest-path cli/Cargo.toml --locked
+      - name: Build Windows CLI for desktop resources
+        run: cargo build --manifest-path cli/Cargo.toml --release --locked
+      - name: Test desktop Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build unsigned desktop app
+        run: npm.cmd run tauri:build:unsigned

@@ -68,6 +68,10 @@ RELEASE_NOTES_*.md
 .env
 .env.local
 .env.test
+*.key
+*.pem
+*.p12
+*.pfx
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -103,6 +107,6 @@ out/
 # Tauri/Rust build output
 src-tauri/gen/
 src-tauri/target/
+cli/target/
+target/
 
-# Server relay lives in its own repo / Vercel — do not publish from this app repo
-deskoy-relay/

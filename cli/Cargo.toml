@@ -1,0 +1,13 @@
+[package]
+name = "deskoy-cli"
+version = "2.0.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "deskoy"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "io-util", "time"] }
+windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop", "Win32_System_Threading"] }

@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Deskoy",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "identifier": "com.deskoy.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run cli:build:release && npm run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run cli:build:release && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -19,6 +19,7 @@
         "resizable": false,
         "maximizable": false,
         "decorations": false,
+        "dragDropEnabled": true,
         "visible": true,
         "backgroundColor": "#111113"
       }
@@ -37,7 +38,10 @@
     ],
     "resources": [
       "../assets/*",
-      "../public/cover/*"
+      "../public/cover/*",
+      "../cli/deskoy.cmd",
+      "../cli/install-path.ps1",
+      "../cli/target/release/deskoy.exe"
     ],
     "windows": {
       "nsis": {

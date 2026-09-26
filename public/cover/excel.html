@@ -321,6 +321,22 @@
       .cell.neg { color: #b42318; }
       .cell.pos { color: #067647; }
       .cell.note { color: #1f2937; background: #fffef5; }
+      .cell { cursor: cell; }
+      .cell[contenteditable="true"] { user-select: text; }
+      .cell.active, .cell:focus {
+        position: relative;
+        z-index: 1;
+        outline: 2px solid #107c41;
+        outline-offset: -2px;
+        background: #f4fbf7;
+      }
+      .titlebar { background: linear-gradient(180deg, #117c43, #0d6537); }
+      .search { cursor: text; user-select: text; }
+      .menus span, .toolbar .chip, .tab { cursor: pointer; }
+      .menus span.is-active { color: #107c41; font-weight: 700; }
+      .fx { cursor: text; user-select: text; }
+      .fx:focus { border-color: #107c41; outline: 2px solid rgba(16,124,65,.12); }
+      .tab.is-active { border-bottom: 2px solid #107c41; color: #107c41; }
       .tabs {
         height: 34px;
         background: var(--white);
@@ -484,6 +500,9 @@
           const addr = cols[c] + r;
           const cell = document.createElement("div");
           cell.className = "cell";
+          cell.dataset.address = addr;
+          cell.tabIndex = 0;
+          cell.contentEditable = r === 1 ? "false" : "true";
           const v = data[addr];
           if (v) cell.textContent = v;
           if (r === 1) cell.classList.add("header");
@@ -512,12 +531,49 @@
       const cellC4 = document.getElementById("cell-C4");
       const baseActual = 91560;
       const target = 87200;
+      const namebox = document.querySelector('.namebox');
+      const formula = document.querySelector('.fx');
+      let selectedCell = document.querySelector('.cell.active');
+
+      function selectCell(cell) {
+        if (!cell || !cell.classList.contains('cell')) return;
+        selectedCell?.classList.remove('active');
+        cell.classList.add('active');
+        selectedCell = cell;
+        namebox.textContent = cell.dataset.address || 'A1';
+        formula.textContent = cell.textContent || '';
+      }
+
+      grid.addEventListener('focusin', (event) => selectCell(event.target));
+      grid.addEventListener('click', (event) => selectCell(event.target));
+      grid.addEventListener('input', (event) => {
+        if (event.target === selectedCell) formula.textContent = selectedCell.textContent || '';
+      });
+      formula.contentEditable = 'true';
+      formula.tabIndex = 0;
+      formula.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || !selectedCell) return;
+        event.preventDefault();
+        selectedCell.textContent = formula.textContent;
+        selectedCell.focus();
+      });
+      document.querySelector('.search').contentEditable = 'true';
+      document.querySelectorAll('.menus span').forEach((item) => item.addEventListener('click', () => {
+        document.querySelectorAll('.menus span').forEach((entry) => entry.classList.remove('is-active'));
+        item.classList.add('is-active');
+      }));
+      document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach((entry) => entry.classList.remove('is-active'));
+        tab.classList.add('is-active');
+      }));
+      document.querySelector('.tab')?.classList.add('is-active');
 
       function tickClock() {
         clock.textContent = new Date().toLocaleTimeString();
       }
 
       function updateLiveValues() {
+        if ([cellC4, cellD4, cellE4].includes(document.activeElement)) return;
         const actual = baseActual + Math.round((Math.random() - 0.5) * 600);
         const variance = actual - target;
         const pct = (variance / target) * 100;
@@ -537,4 +593,3 @@
     </script>
   </body>
 </html>
-

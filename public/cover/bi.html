@@ -211,6 +211,31 @@
       }
       @keyframes pulse { 50% { opacity: .35; } }
 
+      /* Power BI-inspired light report canvas */
+      :root {
+        --bg:#f3f2f1;--panel:#fff;--card:#fff;--line:#e1dfdd;--text:#242424;
+        --muted:#605e5c;--green:#107c10;--amber:#d83b01;--blue:#118dff;
+        --shadow:0 2px 8px rgba(0,0,0,.08);
+      }
+      .top{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08);}
+      .mark{border:0;border-radius:4px;background:#f2c811;color:#1b1b1b;}
+      .nav{background:#faf9f8;}
+      .nav-item{color:#3b3a39;cursor:pointer;}
+      .nav-item:hover{background:#edebe9;}
+      .nav-item.active{background:#fff4ce;color:#242424;box-shadow:inset 3px 0 #f2c811;}
+      .filterbar{background:#fff;}
+      .filter-chip{border-color:#d2d0ce;background:#fff;color:#3b3a39;cursor:pointer;}
+      .filter-chip:hover{border-color:#8a8886;background:#faf9f8;}
+      .filter-chip.is-active{border-color:#118dff;background:#e5f3ff;color:#005a9e;}
+      .kpi,.panel{transition:box-shadow .16s ease,transform .16s ease,border-color .16s ease;cursor:pointer;}
+      .kpi:hover,.panel:hover{box-shadow:0 5px 16px rgba(0,0,0,.12);transform:translateY(-1px);}
+      .kpi.is-selected,.panel.is-selected{border-color:#118dff;box-shadow:0 0 0 1px #118dff,0 5px 16px rgba(0,0,0,.1);}
+      .chart{background:linear-gradient(180deg,rgba(17,141,255,.1),transparent),repeating-linear-gradient(90deg,transparent,transparent 19%,rgba(0,0,0,.06) 20%);}
+      .line-chart{border-color:#e1dfdd;background:linear-gradient(180deg,rgba(16,124,16,.08),transparent),repeating-linear-gradient(0deg,transparent,transparent 25px,rgba(0,0,0,.06) 26px);}
+      .tr{border-bottom-color:#edebe9;cursor:pointer;}
+      .tr:hover{background:#faf9f8;}
+      .bar{transition:height .65s cubic-bezier(.22,1,.36,1);box-shadow:none;}
+
       @media (max-width: 1100px) {
         .app { grid-template-columns: 180px minmax(0, 1fr); }
         .grid {
@@ -308,6 +333,34 @@
       const conv = document.getElementById('conv');
       const nps = document.getElementById('nps');
       const bars = Array.from({ length: 7 }, (_, i) => document.getElementById(`b${i + 1}`));
+      bars.forEach((bar, index) => {
+        bar.style.left = `${7 + index * 13}%`;
+        bar.style.width = '8%';
+      });
+      const filterOptions = [
+        ['Date: This quarter', 'Date: Last 30 days', 'Date: Year to date'],
+        ['Region: All', 'Region: UK', 'Region: Europe'],
+        ['Segment: Enterprise', 'Segment: Mid-market', 'Segment: All'],
+      ];
+      document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', () => {
+        document.querySelectorAll('.nav-item').forEach((entry) => entry.classList.remove('active'));
+        item.classList.add('active');
+      }));
+      document.querySelectorAll('.filter-chip').forEach((chip, index) => chip.addEventListener('click', () => {
+        chip.classList.add('is-active');
+        window.setTimeout(() => chip.classList.remove('is-active'), 420);
+        if (index < filterOptions.length) {
+          const options = filterOptions[index];
+          chip.dataset.option = String((Number(chip.dataset.option || 0) + 1) % options.length);
+          chip.textContent = options[Number(chip.dataset.option)];
+        } else {
+          wiggle();
+        }
+      }));
+      document.querySelectorAll('.kpi, .panel').forEach((card) => card.addEventListener('click', () => {
+        document.querySelectorAll('.kpi, .panel').forEach((entry) => entry.classList.remove('is-selected'));
+        card.classList.add('is-selected');
+      }));
       function tick() {
         const d = new Date();
         clock.textContent = d.toLocaleTimeString();
@@ -328,4 +381,3 @@
     </script>
   </body>
 </html>
-

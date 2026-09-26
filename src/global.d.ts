@@ -1,6 +1,65 @@
 export {};
 
 declare global {
+  type DefenderState = {
+    enabled: boolean;
+    notificationsEnabled: boolean;
+    developerMode: boolean;
+    folders: Array<{ id: string; path: string; name: string }>;
+    busy: boolean;
+    queued: number;
+    progress: string | null;
+    activeScan: {
+      id: string;
+      filename: string;
+      source: 'manual' | 'automatic';
+      phase: string;
+    } | null;
+    queuedScans: Array<{
+      id: string;
+      filename: string;
+      source: 'manual' | 'automatic';
+    }>;
+    lastCompleted: DefenderScanLog | null;
+    protection: {
+      state: 'checking' | 'protected' | 'attention' | 'unavailable';
+      runningMode: string;
+      antivirusEnabled: boolean;
+      realTimeEnabled: boolean;
+      behaviorMonitorEnabled: boolean;
+      onAccessEnabled: boolean;
+      downloadScanningEnabled: boolean;
+      checkedAt: number;
+      detail: string;
+    } | null;
+  };
+
+  type DefenderScanLog = {
+    id: string;
+    timestamp: number;
+    filename: string;
+    source: 'manual' | 'automatic';
+    result: 'clean' | 'threat' | 'remediated' | 'failed' | 'incomplete';
+    detail: string;
+    action: string | null;
+    retryAvailable: boolean;
+  };
+
+  type DeskoyLicenceState = {
+    status:
+      | 'free'
+      | 'activating'
+      | 'pro_active'
+      | 'invalid_or_revoked'
+      | 'already_activated_elsewhere'
+      | 'connection_error';
+    message: string;
+    offlineDaysRemaining: number | null;
+    lastCheckedAt: number | null;
+    activatedAt: number | null;
+    keyHint: string | null;
+  };
+
   interface Window {
     deskoy: {
       openExternal: (url: string) => Promise<{ ok: boolean }>;
@@ -26,6 +85,7 @@ declare global {
         version?: string;
         currentVersion?: string;
         notes?: string;
+        releaseDate?: number;
         url?: string;
         error?: string;
       }>;
@@ -51,6 +111,8 @@ declare global {
         compactMode: boolean;
         fontSize: 'small' | 'default' | 'large';
         reduceMotion: boolean;
+        developerMode: boolean;
+        developerModeDisclaimerAccepted: boolean;
         activeProfileId: string;
         profiles: Array<{
           id: string;
@@ -80,6 +142,20 @@ declare global {
         }>
       >;
       clearProtectionLogs: () => Promise<{ ok: boolean; error?: string }>;
+      getLicenceState: () => Promise<DeskoyLicenceState>;
+      getLicenceKey: () => Promise<string | null>;
+      activateLicence: (licenceKey: string) => Promise<DeskoyLicenceState>;
+      getDefenderState: () => Promise<DefenderState>;
+      pickDefenderScan: () => Promise<{ queued: boolean; scanId?: string; filename?: string }>;
+      scanDefenderPath: (path: string) => Promise<{ queued: boolean; scanId?: string; filename?: string }>;
+      retryDefenderScan: (id: string) => Promise<{ queued: boolean; scanId?: string; filename?: string }>;
+      setDefenderEnabled: (enabled: boolean) => Promise<DefenderState>;
+      setDefenderNotifications: (enabled: boolean) => Promise<DefenderState>;
+      pickDefenderFolder: () => Promise<DefenderState>;
+      removeDefenderFolder: (id: string) => Promise<DefenderState>;
+      getDefenderLogs: () => Promise<DefenderScanLog[]>;
+      clearDefenderLogs: () => Promise<{ ok: boolean }>;
+      openWindowsSecurity: () => Promise<{ ok: boolean }>;
       getDiagnostics: () => Promise<{ ok: boolean; data?: unknown; error?: string }>;
       pauseForMinutes: (minutes: number) => Promise<{ ok: boolean; error?: string }>;
       pauseUntilRestart: () => Promise<{ ok: boolean; error?: string }>;
@@ -104,6 +180,8 @@ declare global {
           compactMode: boolean;
           fontSize: 'small' | 'default' | 'large';
           reduceMotion: boolean;
+          developerMode: boolean;
+          developerModeDisclaimerAccepted: boolean;
           activeProfileId: string;
           profiles: Array<{
             id: string;
@@ -125,7 +203,7 @@ declare global {
           }>;
         }>,
       ) => Promise<{ ok: boolean; error?: string }>;
-      pickCoverFile: () => Promise<{ ok: boolean; path: string }>;
+      pickCoverFile: () => Promise<{ ok: boolean; path: string; error?: string }>;
       sendFeedback: (payload: {
         message: string;
         email?: string;
@@ -141,6 +219,15 @@ declare global {
       windowMinimize: () => Promise<{ ok: boolean }>;
       windowClose: () => Promise<{ ok: boolean }>;
       onStateChanged: (cb: (state: { active: boolean; paused?: boolean }) => void) => () => void;
+      onDefenderChanged: (cb: (state: DefenderState) => void) => () => void;
+      onDefenderScan: (cb: (event: { log: DefenderScanLog; notify: boolean }) => void) => () => void;
+      onLicenceChanged: (cb: (state: DeskoyLicenceState) => void) => () => void;
+      onFileDrop: (cb: (event:
+        | { type: 'enter'; paths: string[]; position: { x: number; y: number } }
+        | { type: 'over'; position: { x: number; y: number } }
+        | { type: 'drop'; paths: string[]; position: { x: number; y: number } }
+        | { type: 'leave' }
+      ) => void) => () => void;
       onUpdateProgress: (
         cb: (event: {
           event: 'started' | 'progress' | 'finished' | 'installed' | 'error';
@@ -154,4 +241,3 @@ declare global {
     };
   }
 }
-

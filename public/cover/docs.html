@@ -266,6 +266,21 @@
       }
       ul { margin: 0 0 14px 18px; font-size: 13.5px; }
       li { margin: 7px 0; }
+      .doc-icon {
+        position: relative;
+        border-radius: 3px;
+        background: #1a73e8;
+        color: transparent;
+        box-shadow: inset 0 -5px 0 rgba(255,255,255,.12);
+      }
+      .doc-icon::after { content: ""; width: 11px; height: 2px; background: #fff; box-shadow: 0 4px #fff, 0 8px #fff; }
+      .title,.searchbox,.page [contenteditable="true"]{user-select:text;cursor:text;}
+      .title:focus,.searchbox:focus{outline:1px solid #1a73e8;border-radius:4px;background:#fff;}
+      .menubar span,.tool,.chip,.comment-card{cursor:pointer;}
+      .menubar span.is-active{color:#1a73e8;font-weight:600;}
+      .tool.is-active{background:#d3e3fd;border-color:#a8c7fa;}
+      .page [contenteditable="true"]:focus{outline:2px solid rgba(26,115,232,.18);outline-offset:3px;border-radius:2px;}
+      .comment-card:hover{border-color:#a8c7fa;box-shadow:0 3px 12px rgba(60,64,67,.12);}
       .caret {
         display: inline-block;
         width: 1px;
@@ -345,12 +360,35 @@
     <script>
       const lastEdit = document.getElementById("lastEdit");
       const liveLine = document.getElementById("liveLine");
+      const docMeta = document.querySelector('.doc-meta');
+      const editableText = document.querySelectorAll('.page h1, .page p, .page li, .brief-table td');
+      document.querySelector('.title').contentEditable = 'true';
+      document.querySelector('.searchbox').contentEditable = 'true';
+      editableText.forEach((node) => {
+        node.contentEditable = 'true';
+        node.spellcheck = true;
+        node.addEventListener('input', () => {
+          docMeta.textContent = 'Saving…';
+          window.clearTimeout(node._saveTimer);
+          node._saveTimer = window.setTimeout(() => {
+            docMeta.textContent = 'Saved to Drive · Shared with leadership';
+            lastEdit.textContent = 'just now';
+          }, 650);
+        });
+      });
+      document.querySelectorAll('.menubar span').forEach((item) => item.addEventListener('click', () => {
+        document.querySelectorAll('.menubar span').forEach((entry) => entry.classList.remove('is-active'));
+        item.classList.add('is-active');
+      }));
+      document.querySelectorAll('.tool').forEach((tool) => tool.addEventListener('click', () => tool.classList.toggle('is-active')));
+      document.querySelectorAll('.comment-card').forEach((card) => card.addEventListener('click', () => card.classList.toggle('is-resolved')));
       let version = 3;
       function refreshEdit() {
         const secondsAgo = 1 + Math.floor(Math.random() * 40);
         lastEdit.textContent = `${secondsAgo}s ago`;
       }
       function refreshLine() {
+        if (document.activeElement === liveLine) return;
         version = version === 3 ? 4 : 3;
         liveLine.innerHTML = `Prepared for Monday leadership review. Draft v${version}.<span class="caret"></span>`;
       }
@@ -360,4 +398,3 @@
     </script>
   </body>
 </html>
-

@@ -16,8 +16,9 @@
   "include": [
     "src/App.tsx",
     "src/main.tsx",
-    "src/tauri-deskoy-api.ts",
-    "src/legacy-ui.ts",
+    "src/api/**/*.ts",
+    "src/legacy-ui/**/*.ts",
+    "src/shared/**/*.ts",
     "src/global.d.ts",
     "src/images.d.ts",
     "src/components/**/*.tsx"

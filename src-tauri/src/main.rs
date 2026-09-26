@@ -1,12 +1,31 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use base64::{engine::general_purpose, Engine as _};
+mod auto_protect;
+mod cli_ipc;
+mod cli_protocol;
+mod defender;
+mod defender_watch;
+mod defender_windows;
+mod feedback;
+mod licensing;
+mod platform;
+mod settings;
+mod updates;
+
+use auto_protect::{blocked_app_reason, hostname_from_rule, normalize_blocked_rule};
+use feedback::{send_bug_report, send_feedback};
+use platform::{
+    acquire_single_instance_guard, close_blocked_window, get_active_window_info,
+    is_blocked_window_gone_or_minimized, mute_default_audio_endpoints,
+    restore_default_audio_endpoints, toggle_volume_mute_vk, AudioMuteResult,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use settings::{normalize_settings, selected_monitor_indices};
 use std::{
     fs,
-    path::PathBuf,
-    process::Command,
+    io::Write,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -19,35 +38,11 @@ use tauri::{
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
 };
-use tauri_plugin_updater::UpdaterExt;
+use updates::{
+    check_app_update, get_updates, install_app_update, send_upgrade_required_if_any,
+    start_version_policy_watcher,
+};
 use url::Url;
-
-#[cfg(windows)]
-use windows::{
-    core::GUID,
-    Win32::{
-        Media::Audio::{
-            eConsole, eMultimedia, eRender, Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator,
-            MMDeviceEnumerator,
-        },
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
-        },
-    },
-};
-
-#[cfg(windows)]
-use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE},
-    System::Threading::{
-        CreateMutexW, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    },
-    UI::WindowsAndMessaging::{
-        FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, PostMessageW, SetForegroundWindow,
-        ShowWindow, SW_MINIMIZE, SW_RESTORE, WM_CLOSE,
-    },
-};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +69,10 @@ struct DeskoySettings {
     font_size: String,
     #[serde(default)]
     reduce_motion: bool,
+    #[serde(default)]
+    developer_mode: bool,
+    #[serde(default)]
+    developer_mode_disclaimer_accepted: bool,
     #[serde(default = "default_active_profile_id")]
     active_profile_id: String,
     #[serde(default)]
@@ -132,14 +131,7 @@ impl Default for DeskoyProfileSettings {
             whitelist: vec!["Teams".into(), "Slack".into(), "Outlook".into()],
             use_custom_cover: false,
             auto_cover_blocked: false,
-            blocked_apps: vec![
-                "1Password".into(),
-                "Bitwarden".into(),
-                "KeePass".into(),
-                "LastPass".into(),
-                "Outlook".into(),
-                "Discord".into(),
-            ],
+            blocked_apps: vec![],
             blocked_websites: vec![],
             blocked_title_keywords: vec![],
         }
@@ -162,6 +154,89 @@ fn default_font_size() -> String {
     "default".into()
 }
 
+fn developer_mode_change_allowed(current: &DeskoySettings, patch: &Value) -> bool {
+    patch.get("developerMode").and_then(Value::as_bool) != Some(true)
+        || current.developer_mode_disclaimer_accepted
+        || patch
+            .get("developerModeDisclaimerAccepted")
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+fn patch_touches_pro_feature(value: &Value) -> bool {
+    match value {
+        Value::Object(values) => values.iter().any(|(key, nested)| {
+            matches!(
+                key.as_str(),
+                "autoCoverBlocked"
+                    | "developerMode"
+                    | "useCustomCover"
+                    | "coverMode"
+                    | "cover"
+                    | "coverDisplay"
+            ) || patch_touches_pro_feature(nested)
+        }),
+        Value::Array(values) => values.iter().any(patch_touches_pro_feature),
+        _ => false,
+    }
+}
+
+fn patch_enables_pro_feature(value: &Value) -> bool {
+    match value {
+        Value::Object(values) => values.iter().any(|(key, nested)| {
+            let enabled_flag = matches!(
+                key.as_str(),
+                "autoCoverBlocked" | "developerMode" | "useCustomCover"
+            ) && nested.as_bool() == Some(true);
+            let custom_cover_mode =
+                key == "coverMode" && matches!(nested.as_str(), Some("url" | "file"));
+            let pro_only_cover = matches!(key.as_str(), "coverMode" | "cover")
+                && nested.as_str().is_some_and(is_pro_only_cover_mode);
+            let custom_cover_display =
+                key == "coverDisplay" && nested.as_str().is_some_and(|display| display != "all");
+            enabled_flag
+                || custom_cover_mode
+                || pro_only_cover
+                || custom_cover_display
+                || patch_enables_pro_feature(nested)
+        }),
+        Value::Array(values) => values.iter().any(patch_enables_pro_feature),
+        _ => false,
+    }
+}
+
+fn is_pro_only_cover_mode(mode: &str) -> bool {
+    matches!(mode, "vscode" | "black")
+}
+
+fn apply_free_cover_entitlement(settings: &mut DeskoySettings) {
+    let custom_cover_selected =
+        settings.use_custom_cover || matches!(settings.cover_mode.as_str(), "url" | "file");
+    if custom_cover_selected {
+        settings.use_custom_cover = false;
+        settings.cover_mode = settings.cover.clone();
+        settings.cover_url.clear();
+        settings.cover_file_path.clear();
+    }
+    if is_pro_only_cover_mode(&settings.cover) {
+        settings.cover = "excel".into();
+    }
+    if is_pro_only_cover_mode(&settings.cover_mode) {
+        settings.cover_mode = settings.cover.clone();
+    }
+    settings.cover_display = default_cover_display();
+}
+
+fn apply_cover_entitlement(app: &AppHandle, settings: &mut DeskoySettings) {
+    if app
+        .state::<licensing::LicenseManager>()
+        .has_pro_entitlement()
+    {
+        return;
+    }
+    apply_free_cover_entitlement(settings);
+}
+
 impl Default for DeskoySettings {
     fn default() -> Self {
         Self {
@@ -176,20 +251,15 @@ impl Default for DeskoySettings {
             enabled: false,
             use_custom_cover: false,
             auto_cover_blocked: false,
-            blocked_apps: vec![
-                "1Password".into(),
-                "Bitwarden".into(),
-                "KeePass".into(),
-                "LastPass".into(),
-                "Outlook".into(),
-                "Discord".into(),
-            ],
+            blocked_apps: vec![],
             blocked_websites: vec![],
             blocked_title_keywords: vec![],
             theme: "dark".into(),
             compact_mode: false,
             font_size: default_font_size(),
             reduce_motion: false,
+            developer_mode: false,
+            developer_mode_disclaimer_accepted: false,
             active_profile_id: default_active_profile_id(),
             profiles: vec![],
         }
@@ -273,17 +343,11 @@ struct UpgradeBlock {
 
 struct DeskoyApp {
     settings_path: PathBuf,
+    store_lock: Mutex<()>,
     settings: Mutex<DeskoySettings>,
     state: Mutex<RuntimeState>,
 }
 
-const FEEDBACK_BUG_COOLDOWN_MS: u128 = 5 * 60 * 60 * 1000;
-const UPDATES_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
-const APP_UPDATE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const VERSION_POLICY_POLL: Duration = Duration::from_secs(6 * 60 * 60);
-const DEFAULT_UPDATER_URL: &str =
-    "https://github.com/deskoys/deskoy/releases/latest/download/latest.json";
-const DEFAULT_UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzRTBFMzk4QTVBMUM3ODUKUldTRng2R2xtT1BnUTlwRXY2Z3EyUTl6ZjlJcThiL3FzbkxsaWNibDljWUsxSzVSbE5tZyt3R3IK";
 const AUTO_COVER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BLOCKED_COVER_COOLDOWN: Duration = Duration::from_secs(6);
 const BLOCKED_WINDOW_SETTLE_POLL: Duration = Duration::from_millis(25);
@@ -291,65 +355,16 @@ const COVER_BEFORE_HIDE_DELAY: Duration = Duration::from_millis(300);
 const COVER_MIN_VISIBLE: Duration = Duration::from_millis(700);
 const COVER_WATCHDOG_INTERVAL: Duration = Duration::from_millis(700);
 const PROTECTION_LOG_LIMIT: usize = 30;
-
-#[cfg(windows)]
-struct SingleInstanceGuard {
-    handle: HANDLE,
-}
-
-#[cfg(windows)]
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe {
-                CloseHandle(self.handle);
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-struct SingleInstanceGuard;
-
-#[cfg(windows)]
-fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
-    let name = wide_null("Local\\DeskoySingleInstance");
-    unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
-        if handle.is_null() {
-            return None;
-        }
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            CloseHandle(handle);
-            focus_existing_main_window();
-            None
-        } else {
-            Some(SingleInstanceGuard { handle })
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
-    Some(SingleInstanceGuard)
-}
-
-#[cfg(windows)]
-fn focus_existing_main_window() {
-    let title = wide_null("Deskoy");
-    unsafe {
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if !hwnd.is_null() {
-            ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
+const REDACTED_WINDOW_TITLE: &str = "Protected window";
+const AUTO_HIDE_EXPLICIT_RULES_MIGRATION_KEY: &str = "autoHideExplicitRulesV1";
+const LEGACY_IMPLICIT_BLOCKED_APPS: [&str; 6] = [
+    "1Password",
+    "Bitwarden",
+    "KeePass",
+    "LastPass",
+    "Outlook",
+    "Discord",
+];
 
 fn main() {
     let _single_instance = match acquire_single_instance_guard() {
@@ -358,6 +373,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -376,9 +392,18 @@ fn main() {
             let app_state = Arc::new(DeskoyApp {
                 settings: Mutex::new(load_settings_from_path(&settings_path)),
                 settings_path,
+                store_lock: Mutex::new(()),
                 state: Mutex::new(RuntimeState::default()),
             });
             app.manage(app_state.clone());
+            let licence_manager = licensing::LicenseManager::initialize(&data_dir);
+            app.manage(licence_manager.clone());
+            cli_ipc::start(app.handle().clone());
+            licensing::start_background_validation(app.handle().clone(), licence_manager);
+            defender::start(app.handle().clone());
+            if let Err(err) = redact_stored_protection_logs(app.handle()) {
+                report_runtime_error(app.handle(), "settings", err);
+            }
             install_tray(app)?;
             start_auto_cover_watcher(app.handle().clone());
             start_cover_watchdog(app.handle().clone());
@@ -395,6 +420,20 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            defender::defender_get_state,
+            defender::defender_pick_scan,
+            defender::defender_scan_path,
+            defender::defender_retry_scan,
+            defender::defender_set_enabled,
+            defender::defender_set_notifications,
+            defender::defender_pick_folder,
+            defender::defender_remove_folder,
+            defender::defender_get_logs,
+            defender::defender_clear_logs,
+            defender::defender_open_security,
+            licensing::licence_get_state,
+            licensing::licence_get_key,
+            licensing::licence_activate,
             open_external,
             get_app_version,
             get_displays,
@@ -433,55 +472,153 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-fn load_store(path: &PathBuf) -> Value {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| json!({}))
+fn load_store(path: &Path) -> Result<Value, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(err) => return Err(format!("settings_read_failed: {err}")),
+    };
+    let store: Value =
+        serde_json::from_str(&text).map_err(|err| format!("settings_parse_failed: {err}"))?;
+    if !store.is_object() {
+        return Err("settings_parse_failed: root value is not an object".into());
+    }
+    Ok(store)
 }
 
-fn save_store(path: &PathBuf, store: &Value) {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+fn temporary_store_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("settings.json");
+    path.with_file_name(format!(".{file_name}.tmp"))
+}
+
+fn save_store(path: &Path, store: &Value) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Err("settings_write_failed: missing parent directory".into());
+    };
+    fs::create_dir_all(parent).map_err(|err| format!("settings_write_failed: {err}"))?;
+    let text =
+        serde_json::to_vec_pretty(store).map_err(|err| format!("settings_write_failed: {err}"))?;
+    let temporary_path = temporary_store_path(path);
+    let write_result = (|| -> Result<(), String> {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temporary_path)
+            .map_err(|err| format!("settings_write_failed: {err}"))?;
+        file.write_all(&text)
+            .map_err(|err| format!("settings_write_failed: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("settings_write_failed: {err}"))?;
+        drop(file);
+        fs::rename(&temporary_path, path)
+            .map_err(|err| format!("settings_write_failed: {err}"))?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
     }
-    if let Ok(text) = serde_json::to_string_pretty(store) {
-        let _ = fs::write(path, text);
+    write_result
+}
+
+fn update_store_at_path<T>(
+    path: &Path,
+    store_lock: &Mutex<()>,
+    update: impl FnOnce(&mut Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = store_lock
+        .lock()
+        .map_err(|_| "settings_lock_failed".to_string())?;
+    let mut store = load_store(path)?;
+    let result = update(&mut store)?;
+    save_store(path, &store)?;
+    Ok(result)
+}
+
+fn redact_log_titles(logs: &mut [ProtectionLogEntry]) -> bool {
+    let mut changed = false;
+    for log in logs {
+        let is_cover_activation = log.process_name == "Deskoy" && log.action == "Cover activated";
+        if !is_cover_activation && log.title != REDACTED_WINDOW_TITLE {
+            log.title = REDACTED_WINDOW_TITLE.into();
+            changed = true;
+        }
     }
+    changed
 }
 
 fn load_protection_logs(app: &AppHandle) -> Vec<ProtectionLogEntry> {
     let state = app_state(app);
-    load_store(&state.settings_path)
-        .get("protectionLogs")
-        .cloned()
-        .and_then(|v| serde_json::from_value::<Vec<ProtectionLogEntry>>(v).ok())
-        .unwrap_or_default()
-}
-
-fn append_activity_log(app: &AppHandle, entry: ProtectionLogEntry) {
-    let state = app_state(app);
-    let mut store = load_store(&state.settings_path);
+    let Ok(_guard) = state.store_lock.lock() else {
+        return Vec::new();
+    };
+    let Ok(store) = load_store(&state.settings_path) else {
+        return Vec::new();
+    };
     let mut logs = store
         .get("protectionLogs")
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ProtectionLogEntry>>(v).ok())
         .unwrap_or_default();
-    logs.insert(0, entry);
-    logs.truncate(PROTECTION_LOG_LIMIT);
-    store["protectionLogs"] = serde_json::to_value(logs).unwrap_or_else(|_| json!([]));
-    save_store(&state.settings_path, &store);
+    redact_log_titles(&mut logs);
+    logs
 }
 
-fn append_protection_log(app: &AppHandle, info: &ActiveWindowInfo) {
+fn redact_stored_protection_logs(app: &AppHandle) -> Result<(), String> {
+    let state = app_state(app);
+    let _guard = state
+        .store_lock
+        .lock()
+        .map_err(|_| "settings_lock_failed".to_string())?;
+    let mut store = load_store(&state.settings_path)?;
+    let Some(raw_logs) = store.get("protectionLogs").cloned() else {
+        return Ok(());
+    };
+    let Ok(mut logs) = serde_json::from_value::<Vec<ProtectionLogEntry>>(raw_logs) else {
+        return Ok(());
+    };
+    if redact_log_titles(&mut logs) {
+        store["protectionLogs"] =
+            serde_json::to_value(logs).map_err(|err| format!("settings_write_failed: {err}"))?;
+        save_store(&state.settings_path, &store)?;
+    }
+    Ok(())
+}
+
+fn append_activity_log(app: &AppHandle, entry: ProtectionLogEntry) -> Result<(), String> {
+    let state = app_state(app);
+    update_store_at_path(&state.settings_path, &state.store_lock, |store| {
+        let mut logs = store
+            .get("protectionLogs")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<ProtectionLogEntry>>(v).ok())
+            .unwrap_or_default();
+        redact_log_titles(&mut logs);
+        logs.insert(0, entry);
+        logs.truncate(PROTECTION_LOG_LIMIT);
+        store["protectionLogs"] = serde_json::to_value(logs)
+            .map_err(|err| format!("settings_write_failed: {err}"))?;
+        Ok(())
+    })
+}
+
+fn append_protection_log(
+    app: &AppHandle,
+    info: &ActiveWindowInfo,
+    action: &str,
+) -> Result<(), String> {
     append_activity_log(
         app,
         ProtectionLogEntry {
             timestamp: now_ms(),
             process_name: info.process_name.clone(),
-            title: info.title.clone(),
-            action: "Covered and hidden".into(),
+            title: REDACTED_WINDOW_TITLE.into(),
+            action: action.into(),
         },
-    );
+    )
 }
 
 fn cover_activity_title(settings: &DeskoySettings) -> String {
@@ -506,7 +643,7 @@ fn cover_activity_title(settings: &DeskoySettings) -> String {
     }
 }
 
-fn append_cover_activation_log(app: &AppHandle, settings: &DeskoySettings) {
+fn append_cover_activation_log(app: &AppHandle, settings: &DeskoySettings) -> Result<(), String> {
     append_activity_log(
         app,
         ProtectionLogEntry {
@@ -515,14 +652,15 @@ fn append_cover_activation_log(app: &AppHandle, settings: &DeskoySettings) {
             title: cover_activity_title(settings),
             action: "Cover activated".into(),
         },
-    );
+    )
 }
 
-fn clear_protection_logs_from_store(app: &AppHandle) {
+fn clear_protection_logs_from_store(app: &AppHandle) -> Result<(), String> {
     let state = app_state(app);
-    let mut store = load_store(&state.settings_path);
-    store["protectionLogs"] = json!([]);
-    save_store(&state.settings_path, &store);
+    update_store_at_path(&state.settings_path, &state.store_lock, |store| {
+        store["protectionLogs"] = json!([]);
+        Ok(())
+    })
 }
 
 fn report_runtime_error(app: &AppHandle, area: &str, error: impl Into<String>) {
@@ -540,186 +678,63 @@ fn get_settings_from_state(app: &AppHandle) -> DeskoySettings {
     settings
 }
 
+fn remove_legacy_seeded_auto_hide_rules(settings: &mut DeskoySettings) -> bool {
+    fn retain_explicit_rules(rules: &mut Vec<String>) -> bool {
+        let original_len = rules.len();
+        rules.retain(|rule| {
+            !LEGACY_IMPLICIT_BLOCKED_APPS
+                .iter()
+                .any(|legacy| rule.trim().eq_ignore_ascii_case(legacy))
+        });
+        rules.len() != original_len
+    }
+
+    let mut changed = retain_explicit_rules(&mut settings.blocked_apps);
+    for profile in &mut settings.profiles {
+        changed |= retain_explicit_rules(&mut profile.settings.blocked_apps);
+    }
+    changed
+}
+
 fn load_settings_from_path(path: &PathBuf) -> DeskoySettings {
-    let store = load_store(path);
-    normalize_settings(
+    let mut store = load_store(path).unwrap_or_else(|err| {
+        eprintln!("[deskoy:settings] {err}");
+        json!({})
+    });
+    let had_saved_settings = store.get("settings").is_some();
+    let mut settings = normalize_settings(
         store
             .get("settings")
             .cloned()
             .and_then(|v| serde_json::from_value::<DeskoySettings>(v).ok())
             .unwrap_or_default(),
-    )
-}
+    );
 
-fn normalize_settings(mut settings: DeskoySettings) -> DeskoySettings {
-    settings.cover_display = normalize_cover_display(&settings.cover_display);
-    settings.font_size = normalize_font_size(&settings.font_size);
-    if settings.use_custom_cover == false
-        && (settings.cover_mode == "url" || settings.cover_mode == "file")
+    if had_saved_settings
+        && store
+            .get(AUTO_HIDE_EXPLICIT_RULES_MIGRATION_KEY)
+            .and_then(Value::as_bool)
+            != Some(true)
     {
-        settings.use_custom_cover = true;
-    }
-    if settings.blocked_websites.is_empty() && !settings.blocked_title_keywords.is_empty() {
-        let mut websites = Vec::new();
-        let mut keywords = Vec::new();
-        for rule in settings.blocked_title_keywords {
-            if hostname_from_rule(&normalize_blocked_rule(&rule)).is_some() {
-                websites.push(rule);
-            } else {
-                keywords.push(rule);
-            }
+        remove_legacy_seeded_auto_hide_rules(&mut settings);
+        store[AUTO_HIDE_EXPLICIT_RULES_MIGRATION_KEY] = Value::Bool(true);
+        store["settings"] = serde_json::to_value(&settings).unwrap_or_else(|_| json!({}));
+        if let Err(err) = save_store(path, &store) {
+            eprintln!("[deskoy:settings] {err}");
         }
-        settings.blocked_websites = normalized_unique_lines(websites);
-        settings.blocked_title_keywords = normalized_unique_lines(keywords);
-    } else {
-        settings.blocked_websites = normalized_unique_lines(settings.blocked_websites);
-        settings.blocked_title_keywords = normalized_unique_lines(settings.blocked_title_keywords);
     }
-    let profiles = std::mem::take(&mut settings.profiles);
-    settings.profiles = normalize_profiles(profiles, &settings);
-    if !settings
-        .profiles
-        .iter()
-        .any(|profile| profile.id == settings.active_profile_id)
-    {
-        settings.active_profile_id = default_active_profile_id();
-    }
+
     settings
 }
 
-fn normalize_profiles(
-    profiles: Vec<DeskoyProfile>,
-    settings: &DeskoySettings,
-) -> Vec<DeskoyProfile> {
-    let mut normalized = Vec::new();
-    for profile in profiles {
-        let id = normalize_profile_id(&profile.id);
-        if id.is_empty() || normalized.iter().any(|item: &DeskoyProfile| item.id == id) {
-            continue;
-        }
-        let name = profile.name.trim();
-        normalized.push(DeskoyProfile {
-            id,
-            name: if name.is_empty() {
-                "Untitled".into()
-            } else {
-                name.chars().take(40).collect()
-            },
-            settings: normalize_profile_settings(profile.settings),
-        });
-    }
-
-    if !normalized.iter().any(|profile| profile.id == "default") {
-        normalized.insert(0, default_profile_from_settings(settings));
-    }
-    normalized.sort_by_key(|profile| {
-        if profile.id == "default" {
-            (0, String::new())
-        } else {
-            (1, profile.name.to_lowercase())
-        }
-    });
-    normalized
-}
-
-fn normalize_profile_id(value: &str) -> String {
-    value
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .take(64)
-        .collect()
-}
-
-fn default_profile_from_settings(settings: &DeskoySettings) -> DeskoyProfile {
-    DeskoyProfile {
-        id: default_active_profile_id(),
-        name: "Default".into(),
-        settings: profile_settings_from_settings(settings),
-    }
-}
-
-fn profile_settings_from_settings(settings: &DeskoySettings) -> DeskoyProfileSettings {
-    DeskoyProfileSettings {
-        cover_mode: settings.cover_mode.clone(),
-        cover: settings.cover.clone(),
-        cover_display: settings.cover_display.clone(),
-        cover_url: settings.cover_url.clone(),
-        cover_file_path: settings.cover_file_path.clone(),
-        audio_mute: settings.audio_mute,
-        whitelist: settings.whitelist.clone(),
-        use_custom_cover: settings.use_custom_cover,
-        auto_cover_blocked: settings.auto_cover_blocked,
-        blocked_apps: settings.blocked_apps.clone(),
-        blocked_websites: settings.blocked_websites.clone(),
-        blocked_title_keywords: settings.blocked_title_keywords.clone(),
-    }
-}
-
-fn normalize_profile_settings(mut settings: DeskoyProfileSettings) -> DeskoyProfileSettings {
-    settings.cover_display = normalize_cover_display(&settings.cover_display);
-    if !settings.use_custom_cover && (settings.cover_mode == "url" || settings.cover_mode == "file")
-    {
-        settings.use_custom_cover = true;
-    }
-    settings.whitelist = normalized_unique_lines(settings.whitelist);
-    settings.blocked_apps = normalized_unique_lines(settings.blocked_apps);
-    settings.blocked_websites = normalized_unique_lines(settings.blocked_websites);
-    settings.blocked_title_keywords = normalized_unique_lines(settings.blocked_title_keywords);
-    settings
-}
-
-fn normalize_font_size(value: &str) -> String {
-    match value.trim() {
-        "small" => "small".into(),
-        "large" => "large".into(),
-        _ => "default".into(),
-    }
-}
-
-fn normalize_cover_display(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed == "all" {
-        return "all".into();
-    }
-    let Some(index) = trimmed.strip_prefix("monitor:") else {
-        return "all".into();
-    };
-    match index.parse::<usize>() {
-        Ok(index) => format!("monitor:{index}"),
-        Err(_) => "all".into(),
-    }
-}
-
-fn selected_monitor_indices(settings: &DeskoySettings, monitor_count: usize) -> Vec<usize> {
-    if monitor_count == 0 {
-        return Vec::new();
-    }
-    if let Some(index) = settings
-        .cover_display
-        .strip_prefix("monitor:")
-        .and_then(|index| index.parse::<usize>().ok())
-    {
-        return vec![index.min(monitor_count - 1)];
-    }
-    (0..monitor_count).collect()
-}
-
-fn normalized_unique_lines(lines: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = lines
-        .into_iter()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
-    out.sort_by_key(|line| line.to_lowercase());
-    out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-    out
-}
-
-fn set_settings_in_state(app: &AppHandle, patch: Value) -> DeskoySettings {
+fn set_settings_in_state(app: &AppHandle, patch: Value) -> Result<DeskoySettings, String> {
     let state = app_state(app);
-    let mut current =
-        serde_json::to_value(get_settings_from_state(app)).unwrap_or_else(|_| json!({}));
+    let _guard = state
+        .store_lock
+        .lock()
+        .map_err(|_| "settings_lock_failed".to_string())?;
+    let mut current = serde_json::to_value(state.settings.lock().unwrap().clone())
+        .map_err(|err| format!("settings_write_failed: {err}"))?;
     if let (Value::Object(cur), Value::Object(patch_obj)) = (&mut current, patch) {
         for (key, value) in patch_obj {
             if key != "autostart" && key != "closeEverythingOnTrigger" {
@@ -728,11 +743,12 @@ fn set_settings_in_state(app: &AppHandle, patch: Value) -> DeskoySettings {
         }
     }
     let settings = normalize_settings(serde_json::from_value(current).unwrap_or_default());
-    let mut store = load_store(&state.settings_path);
-    store["settings"] = serde_json::to_value(&settings).unwrap_or_else(|_| json!({}));
-    save_store(&state.settings_path, &store);
+    let mut store = load_store(&state.settings_path)?;
+    store["settings"] = serde_json::to_value(&settings)
+        .map_err(|err| format!("settings_write_failed: {err}"))?;
+    save_store(&state.settings_path, &store)?;
     *state.settings.lock().unwrap() = settings.clone();
-    settings
+    Ok(settings)
 }
 
 fn emit_state(app: &AppHandle) {
@@ -1080,7 +1096,8 @@ async fn toggle_cover_via_hotkey(app: AppHandle) {
         }
     };
     if should_open {
-        let settings = get_settings_from_state(&app);
+        let mut settings = get_settings_from_state(&app);
+        apply_cover_entitlement(&app, &mut settings);
         let app2 = app.clone();
         let mute = settings.audio_mute;
         let cover_settings = settings.clone();
@@ -1103,7 +1120,9 @@ async fn toggle_cover_via_hotkey(app: AppHandle) {
             rt.cover_session = None;
             return;
         }
-        append_cover_activation_log(&app, &settings);
+        if let Err(err) = append_cover_activation_log(&app, &settings) {
+            report_runtime_error(&app, "activity-log", err);
+        }
         app_state(&app).state.lock().unwrap().cover_busy = false;
     } else {
         close_cover_session(&app).await;
@@ -1371,9 +1390,6 @@ async fn open_cover_if_allowed(app: AppHandle, trigger: Option<ActiveWindowInfo>
     cover_settings.cover_mode = cover_settings.cover.clone();
     cover_settings.cover_url.clear();
     cover_settings.cover_file_path.clear();
-    if let Some(info) = &trigger {
-        append_protection_log(&app, info);
-    }
     let app2 = app.clone();
     let cover = tauri::async_runtime::spawn(async move {
         open_cover_from_settings(&app2, &cover_settings).await
@@ -1388,14 +1404,14 @@ async fn open_cover_if_allowed(app: AppHandle, trigger: Option<ActiveWindowInfo>
         rt.cover_session = None;
         return;
     }
-    if let Some(t) = &trigger {
+    if let Some(info) = &trigger {
         tokio::time::sleep(COVER_BEFORE_HIDE_DELAY).await;
-        if !close_blocked_window(t).await {
-            report_runtime_error(
-                &app,
-                "blocked-window",
-                format!("failed to hide blocked window: {}", t.process_name),
-            );
+        let handled = close_blocked_window(info).await;
+        if let Err(err) = append_protection_log(&app, info, "Covered and hidden") {
+            report_runtime_error(&app, "activity-log", err);
+        }
+        if !handled {
+            report_runtime_error(&app, "blocked-window", "failed to hide blocked window");
         }
     }
     app_state(&app).state.lock().unwrap().cover_busy = false;
@@ -1410,7 +1426,7 @@ async fn open_cover_if_allowed(app: AppHandle, trigger: Option<ActiveWindowInfo>
                     close_cover_session(&app3).await;
                     break;
                 }
-                if is_blocked_window_gone_or_minimized(info.hwnd, info.pid) {
+                if is_blocked_window_gone_or_minimized(&info) {
                     let remaining = {
                         let state = app_state(&app3);
                         let rt = state.state.lock().unwrap();
@@ -1528,7 +1544,13 @@ fn start_auto_cover_watcher(app: AppHandle) {
     thread::spawn(move || loop {
         thread::sleep(AUTO_COVER_POLL_INTERVAL);
         let s = get_settings_from_state(&app);
-        if !s.enabled || is_paused(&app) || !s.auto_cover_blocked {
+        if !app
+            .state::<licensing::LicenseManager>()
+            .has_pro_entitlement()
+            || !s.enabled
+            || is_paused(&app)
+            || !s.auto_cover_blocked
+        {
             continue;
         }
         {
@@ -1558,683 +1580,6 @@ fn start_auto_cover_watcher(app: AppHandle) {
             });
         }
     });
-}
-
-fn is_deskoy_window(info: &ActiveWindowInfo) -> bool {
-    info.process_name.to_lowercase().contains("deskoy")
-}
-
-fn blocked_app_reason(info: &ActiveWindowInfo, settings: &DeskoySettings) -> Option<String> {
-    if is_deskoy_window(info) || is_whitelisted_process(&info.process_name, &settings.whitelist) {
-        return None;
-    }
-    if let Some(rule) = settings
-        .blocked_apps
-        .iter()
-        .find(|rule| process_rule_matches(&info.process_name, rule))
-    {
-        return Some(format!("app rule matched: {rule}"));
-    }
-    if let Some(rule) = settings
-        .blocked_websites
-        .iter()
-        .find(|rule| website_rule_matches_window(info, rule))
-    {
-        return Some(format!("website rule matched: {rule}"));
-    }
-    settings
-        .blocked_title_keywords
-        .iter()
-        .find(|rule| blocked_title_rule_matches(&info.title, rule))
-        .map(|rule| format!("title keyword matched: {rule}"))
-}
-
-fn is_whitelisted_process(process_name: &str, whitelist: &[String]) -> bool {
-    whitelist
-        .iter()
-        .any(|rule| process_rule_matches(process_name, rule))
-}
-
-fn process_rule_matches(process_name: &str, raw_rule: &str) -> bool {
-    let process = normalize_process_identifier(process_name);
-    let rule = normalize_process_identifier(raw_rule);
-    if rule.is_empty() || process.is_empty() {
-        return false;
-    }
-    if process.eq_ignore_ascii_case(&rule) {
-        return true;
-    }
-
-    let process_tokens = identifier_tokens(&process);
-    let rule_tokens = identifier_tokens(&rule);
-    !rule_tokens.is_empty() && contains_token_sequence(&process_tokens, &rule_tokens)
-}
-
-fn normalize_process_identifier(value: &str) -> String {
-    let value = value.trim().trim_matches('"').trim_matches('\'');
-    let file_name = value
-        .rsplit(&['\\', '/'][..])
-        .next()
-        .unwrap_or(value)
-        .trim();
-    strip_case_insensitive_suffix(file_name, ".exe")
-        .trim()
-        .to_string()
-}
-
-fn strip_case_insensitive_suffix<'a>(value: &'a str, suffix: &str) -> &'a str {
-    if value.to_ascii_lowercase().ends_with(suffix) {
-        &value[..value.len() - suffix.len()]
-    } else {
-        value
-    }
-}
-
-fn identifier_tokens(value: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut prev_lower_or_digit = false;
-    let chars: Vec<char> = value.chars().collect();
-
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if ch.is_ascii_alphanumeric() {
-            let next_is_lower = chars
-                .get(index + 1)
-                .map(|next| next.is_ascii_lowercase())
-                .unwrap_or(false);
-            if ch.is_ascii_uppercase()
-                && !current.is_empty()
-                && (prev_lower_or_digit || next_is_lower)
-            {
-                tokens.push(current.to_lowercase());
-                current.clear();
-            }
-            current.push(ch.to_ascii_lowercase());
-            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        } else {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-            prev_lower_or_digit = false;
-        }
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
-}
-
-fn contains_token_sequence(haystack: &[String], needle: &[String]) -> bool {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|window| window == needle)
-}
-
-fn website_rule_matches_title(title: &str, raw_rule: &str) -> bool {
-    let rule = normalize_blocked_rule(raw_rule);
-    hostname_from_rule(&rule)
-        .map(|host| title_contains_hostname(title, &host))
-        .unwrap_or(false)
-}
-
-fn website_rule_matches_window(info: &ActiveWindowInfo, raw_rule: &str) -> bool {
-    let rule = normalize_blocked_rule(raw_rule);
-    let Some(host) = hostname_from_rule(&rule) else {
-        return false;
-    };
-    if is_browser_process(&info.process_name) {
-        title_contains_hostname(&info.title, &host)
-            || browser_title_matches_host(&info.title, &info.process_name, &host)
-    } else {
-        title_contains_explicit_url_hostname(&info.title, &host)
-    }
-}
-
-fn is_browser_process(process_name: &str) -> bool {
-    let compact = identifier_tokens(&normalize_process_identifier(process_name)).join("");
-    matches!(
-        compact.as_str(),
-        "arc"
-            | "brave"
-            | "bravebrowser"
-            | "chrome"
-            | "chromium"
-            | "duckduckgo"
-            | "firefox"
-            | "iexplore"
-            | "librewolf"
-            | "msedge"
-            | "opera"
-            | "operagx"
-            | "torbrowser"
-            | "vivaldi"
-            | "waterfox"
-            | "zen"
-    )
-}
-
-fn blocked_title_rule_matches(title: &str, raw_rule: &str) -> bool {
-    let rule = normalize_blocked_rule(raw_rule);
-    if rule.is_empty() {
-        return false;
-    }
-    if hostname_from_rule(&rule).is_some() {
-        return website_rule_matches_title(title, &rule);
-    }
-
-    let title = title.to_lowercase();
-    expand_keyword_rule(&rule)
-        .iter()
-        .any(|needle| contains_bounded_phrase(&title, needle))
-}
-
-fn browser_title_matches_host(title: &str, process_name: &str, host: &str) -> bool {
-    if !is_browser_process(process_name) {
-        return false;
-    }
-    let title = browser_page_title(title).to_lowercase();
-    host_title_phrases(host)
-        .iter()
-        .any(|phrase| contains_bounded_phrase(&title, phrase))
-}
-
-fn browser_page_title(title: &str) -> String {
-    let mut page_title = title.trim();
-    loop {
-        let mut trimmed = false;
-        for separator in [" - ", " — ", " – "] {
-            if let Some((before, suffix)) = page_title.rsplit_once(separator) {
-                if is_browser_title_suffix(suffix) {
-                    page_title = before.trim();
-                    trimmed = true;
-                    break;
-                }
-            }
-        }
-        if !trimmed {
-            break;
-        }
-    }
-    page_title.to_string()
-}
-
-fn is_browser_title_suffix(value: &str) -> bool {
-    let suffix = identifier_tokens(value).join("");
-    matches!(
-        suffix.as_str(),
-        "arc"
-            | "brave"
-            | "bravebrowser"
-            | "chrome"
-            | "chromium"
-            | "duckduckgo"
-            | "firefox"
-            | "googlechrome"
-            | "internetexplorer"
-            | "librewolf"
-            | "microsoftedge"
-            | "mozillafirefox"
-            | "opera"
-            | "operagx"
-            | "torbrowser"
-            | "vivaldi"
-            | "waterfox"
-            | "zen"
-            | "zenbrowser"
-    )
-}
-
-fn host_title_phrases(host: &str) -> Vec<String> {
-    let host = strip_www(host);
-    let parts: Vec<&str> = host.split('.').filter(|part| !part.is_empty()).collect();
-    if parts.len() < 2 {
-        return Vec::new();
-    }
-
-    let mut phrases = Vec::new();
-    let registrable = parts[parts.len().saturating_sub(2)];
-    if is_meaningful_host_label(registrable) {
-        phrases.push(registrable.replace('-', " "));
-    }
-
-    for part in &parts[..parts.len().saturating_sub(1)] {
-        if is_meaningful_host_label(part) {
-            phrases.push(part.replace('-', " "));
-        }
-    }
-
-    phrases.sort();
-    phrases.dedup();
-    phrases
-}
-
-fn is_meaningful_host_label(label: &str) -> bool {
-    !matches!(
-        label,
-        "ac" | "accounts" | "app" | "apps" | "auth" | "cdn" | "co" | "com" | "edu" | "gov"
-            | "io" | "login" | "m" | "mail" | "mobile" | "net" | "org" | "secure"
-            | "signin" | "www" | "www2"
-    )
-}
-
-fn normalize_blocked_rule(raw: &str) -> String {
-    raw.trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_lowercase()
-}
-
-fn hostname_from_rule(rule: &str) -> Option<String> {
-    let candidate = rule
-        .strip_prefix("http://")
-        .or_else(|| rule.strip_prefix("https://"))
-        .unwrap_or(rule);
-    let host = candidate
-        .split(&['/', '?', '#'][..])
-        .next()
-        .unwrap_or("")
-        .split('@')
-        .last()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim_matches('.');
-
-    if is_specific_hostname(host) {
-        Some(strip_www(host).to_string())
-    } else {
-        None
-    }
-}
-
-fn is_specific_hostname(host: &str) -> bool {
-    let parts: Vec<&str> = host.split('.').filter(|part| !part.is_empty()).collect();
-    parts.len() >= 2
-        && parts.iter().all(|part| {
-            part.chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-                && !part.starts_with('-')
-                && !part.ends_with('-')
-        })
-}
-
-fn strip_www(host: &str) -> &str {
-    host.strip_prefix("www.").unwrap_or(host)
-}
-
-fn title_contains_hostname(title: &str, host: &str) -> bool {
-    let host = strip_www(host);
-    title_hostname_candidates(title)
-        .into_iter()
-        .map(|(candidate, _explicit_url)| candidate)
-        .any(|candidate| candidate == host || candidate.ends_with(&format!(".{host}")))
-}
-
-fn title_contains_explicit_url_hostname(title: &str, host: &str) -> bool {
-    let host = strip_www(host);
-    title_hostname_candidates(title)
-        .into_iter()
-        .filter(|(_candidate, explicit_url)| *explicit_url)
-        .map(|(candidate, _explicit_url)| candidate)
-        .any(|candidate| candidate == host || candidate.ends_with(&format!(".{host}")))
-}
-
-fn title_hostname_candidates(title: &str) -> Vec<(String, bool)> {
-    title
-        .to_lowercase()
-        .split(|ch: char| {
-            !(ch.is_ascii_alphanumeric()
-                || ch == '-'
-                || ch == '.'
-                || ch == ':'
-                || ch == '/'
-                || ch == '@')
-        })
-        .filter_map(|token| {
-            let token = token.trim_matches('.');
-            let explicit_url = token.starts_with("http://") || token.starts_with("https://");
-            hostname_from_title_token(token).map(|host| (host, explicit_url))
-        })
-        .collect()
-}
-
-fn hostname_from_title_token(token: &str) -> Option<String> {
-    let token = token
-        .trim_matches('.')
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split('@')
-        .last()
-        .unwrap_or("")
-        .split(&['/', '?', '#'][..])
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim_matches('.');
-
-    if is_specific_hostname(token) {
-        Some(strip_www(token).to_string())
-    } else {
-        None
-    }
-}
-
-fn expand_keyword_rule(rule: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    out.push(rule.to_string());
-    if rule.contains('\\') || rule.contains('/') {
-        if let Some(base) = rule
-            .split(&['\\', '/'][..])
-            .filter(|p| !p.is_empty())
-            .last()
-        {
-            if base != rule {
-                out.push(base.into());
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn contains_bounded_phrase(title: &str, needle: &str) -> bool {
-    let needle = needle.trim();
-    if needle.is_empty() {
-        return false;
-    }
-    title.match_indices(needle)
-        .any(|(start, _)| has_phrase_boundaries(title, start, needle.len()))
-}
-
-fn has_phrase_boundaries(text: &str, start: usize, len: usize) -> bool {
-    let before = text[..start].chars().next_back();
-    let after = text[start + len..].chars().next();
-    before.map(is_keyword_boundary).unwrap_or(true) && after.map(is_keyword_boundary).unwrap_or(true)
-}
-
-fn is_keyword_boundary(ch: char) -> bool {
-    !ch.is_ascii_alphanumeric()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn active_info(process_name: &str, title: &str) -> ActiveWindowInfo {
-        ActiveWindowInfo {
-            hwnd: 1,
-            pid: 1,
-            process_name: process_name.into(),
-            title: title.into(),
-            _class_name: String::new(),
-        }
-    }
-
-    #[test]
-    fn domain_rules_require_hostname_tokens() {
-        assert!(website_rule_matches_title(
-            "https://mail.gmail.com/mail/u/0/#inbox - Google Chrome",
-            "gmail.com"
-        ));
-        assert!(website_rule_matches_title(
-            "Inbox - https://gmail.com - Google Chrome",
-            "https://gmail.com"
-        ));
-        assert!(!website_rule_matches_title(
-            "Gmail - New Tab - Google Chrome",
-            "gmail.com"
-        ));
-        assert!(!website_rule_matches_title(
-            "https://gmail.com.evil.test - Google Chrome",
-            "gmail.com"
-        ));
-    }
-
-    #[test]
-    fn website_rules_prefer_browser_or_explicit_url_context() {
-        assert!(website_rule_matches_window(
-            &active_info("chrome", "https://mail.gmail.com/mail/u/0/#inbox - Google Chrome"),
-            "gmail.com"
-        ));
-        assert!(website_rule_matches_window(
-            &active_info("notepad", "Notes - https://gmail.com - Notepad"),
-            "gmail.com"
-        ));
-        assert!(!website_rule_matches_window(
-            &active_info("notepad", "gmail.com notes.txt - Notepad"),
-            "gmail.com"
-        ));
-        assert!(website_rule_matches_window(
-            &active_info("chrome", "Gmail - Google Chrome"),
-            "gmail.com"
-        ));
-        assert!(website_rule_matches_window(
-            &active_info("msedge", "YouTube - Microsoft Edge"),
-            "youtube.com"
-        ));
-        assert!(!website_rule_matches_window(
-            &active_info("chrome", "New Tab - Google Chrome"),
-            "google.com"
-        ));
-    }
-
-    #[test]
-    fn app_rules_match_process_tokens_not_substrings() {
-        assert!(process_rule_matches("Microsoft Teams", "Teams"));
-        assert!(process_rule_matches("MSTeams", "Teams"));
-        assert!(process_rule_matches("DiscordCanary", "Discord"));
-        assert!(process_rule_matches(
-            "C:\\Program Files\\Bitwarden.exe",
-            "Bitwarden"
-        ));
-        assert!(!process_rule_matches("Steam", "Teams"));
-        assert!(!process_rule_matches("TeamViewer", "Teams"));
-    }
-
-    #[test]
-    fn whitelisted_processes_skip_auto_protect() {
-        let mut settings = DeskoySettings::default();
-        settings.blocked_title_keywords = vec!["gmail".into()];
-        assert!(blocked_app_reason(&active_info("chrome", "Gmail - Google Chrome"), &settings).is_some());
-        assert!(blocked_app_reason(&active_info("Outlook", "Gmail password reset"), &settings).is_none());
-    }
-
-    #[test]
-    fn plain_keyword_rules_keep_title_matching() {
-        assert!(blocked_title_rule_matches(
-            "Inbox - Gmail - Google Chrome",
-            "gmail"
-        ));
-        assert!(blocked_title_rule_matches(
-            "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
-            "taxes.xlsx"
-        ));
-        assert!(blocked_title_rule_matches("Mail - Outlook", "mail"));
-        assert!(blocked_title_rule_matches(
-            "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
-            "taxes"
-        ));
-        assert!(!blocked_title_rule_matches("thumbnail.png - Photos", "mail"));
-        assert!(!blocked_title_rule_matches(
-            "C:\\Users\\User\\Desktop\\taxes.xlsx - Excel",
-            "tax"
-        ));
-    }
-}
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(not(windows))]
-trait CommandCreationFlags {
-    fn creation_flags(&mut self, _flags: u32) -> &mut Self;
-}
-
-#[cfg(not(windows))]
-impl CommandCreationFlags for Command {
-    fn creation_flags(&mut self, _flags: u32) -> &mut Self {
-        self
-    }
-}
-
-#[cfg(windows)]
-fn get_active_window_info() -> Option<ActiveWindowInfo> {
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return None;
-        }
-
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == 0 {
-            return None;
-        }
-
-        Some(ActiveWindowInfo {
-            hwnd: hwnd as isize as i64,
-            pid,
-            process_name: process_name_from_pid(pid).unwrap_or_default(),
-            title: window_text(hwnd),
-            _class_name: window_class_name(hwnd),
-        })
-    }
-}
-
-#[cfg(not(windows))]
-fn get_active_window_info() -> Option<ActiveWindowInfo> {
-    None
-}
-
-#[cfg(windows)]
-unsafe fn window_text(hwnd: *mut std::ffi::c_void) -> String {
-    let len = GetWindowTextLengthW(hwnd).max(0) as usize;
-    let mut buffer = vec![0u16; len + 1];
-    let read = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
-    String::from_utf16_lossy(&buffer[..read.max(0) as usize])
-}
-
-#[cfg(windows)]
-unsafe fn window_class_name(hwnd: *mut std::ffi::c_void) -> String {
-    let mut buffer = vec![0u16; 256];
-    let read = GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
-    String::from_utf16_lossy(&buffer[..read.max(0) as usize])
-}
-
-#[cfg(windows)]
-unsafe fn process_name_from_pid(pid: u32) -> Option<String> {
-    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-    if handle.is_null() {
-        return None;
-    }
-
-    let mut buffer = vec![0u16; 32768];
-    let mut len = buffer.len() as u32;
-    let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut len);
-    CloseHandle(handle);
-    if ok == 0 || len == 0 {
-        return None;
-    }
-
-    let path = String::from_utf16_lossy(&buffer[..len as usize]);
-    Some(
-        PathBuf::from(path)
-            .file_stem()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default(),
-    )
-}
-
-async fn close_blocked_window(trg: &ActiveWindowInfo) -> bool {
-    let hwnd = trg.hwnd;
-    let pid = trg.pid;
-    tauri::async_runtime::spawn_blocking(move || hide_blocked_window(hwnd, pid))
-        .await
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn hide_blocked_window(hwnd: i64, pid: u32) -> bool {
-    unsafe {
-        let hwnd = hwnd as isize as *mut std::ffi::c_void;
-        if hwnd.is_null() || IsWindow(hwnd) == 0 {
-            return true;
-        }
-        if pid != 0 && window_pid(hwnd) != Some(pid) {
-            return true;
-        }
-        let mut ok = true;
-        if IsIconic(hwnd) == 0 {
-            ok = ShowWindow(hwnd, SW_MINIMIZE) != 0;
-        }
-        PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0 || ok
-    }
-}
-
-#[cfg(not(windows))]
-fn hide_blocked_window(_hwnd: i64, _pid: u32) -> bool {
-    true
-}
-
-#[cfg(windows)]
-fn is_blocked_window_gone_or_minimized(hwnd: i64, pid: u32) -> bool {
-    unsafe {
-        let hwnd = hwnd as isize as *mut std::ffi::c_void;
-        if hwnd.is_null() || IsWindow(hwnd) == 0 {
-            return true;
-        }
-        if pid != 0 && window_pid(hwnd) != Some(pid) {
-            return true;
-        }
-        IsIconic(hwnd) != 0
-    }
-}
-
-#[cfg(not(windows))]
-fn is_blocked_window_gone_or_minimized(_hwnd: i64, _pid: u32) -> bool {
-    false
-}
-
-#[cfg(windows)]
-unsafe fn window_pid(hwnd: *mut std::ffi::c_void) -> Option<u32> {
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, &mut pid);
-    if pid == 0 {
-        None
-    } else {
-        Some(pid)
-    }
-}
-
-fn run_pwsh_encoded(script: String) -> Option<String> {
-    let encoded = general_purpose::STANDARD.encode(
-        script
-            .encode_utf16()
-            .flat_map(|u| u.to_le_bytes())
-            .collect::<Vec<u8>>(),
-    );
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Sta",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded,
-        ])
-        .creation_flags(0x08000000)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().into())
 }
 
 async fn on_cover_open_audio(app: &AppHandle, want_mute: bool) {
@@ -2280,148 +1625,6 @@ async fn on_cover_close_audio(app: &AppHandle) {
         }
         Some(PendingAudioRestore::VkToggle) => toggle_volume_mute_vk(),
         _ => {}
-    }
-}
-
-enum AudioMuteResult {
-    Muted(Vec<i32>),
-    AlreadyMuted,
-    Failed,
-}
-
-#[cfg(windows)]
-fn mute_default_audio_endpoints() -> AudioMuteResult {
-    match set_default_audio_mute(true, &[0, 1], true) {
-        Ok(roles) if roles.is_empty() => AudioMuteResult::AlreadyMuted,
-        Ok(roles) => AudioMuteResult::Muted(roles),
-        Err(_) => AudioMuteResult::Failed,
-    }
-}
-
-#[cfg(not(windows))]
-fn mute_default_audio_endpoints() -> AudioMuteResult {
-    AudioMuteResult::Failed
-}
-
-#[cfg(windows)]
-fn restore_default_audio_endpoints(roles: &[i32]) -> bool {
-    set_default_audio_mute(false, roles, false).is_ok()
-}
-
-#[cfg(not(windows))]
-fn restore_default_audio_endpoints(_roles: &[i32]) -> bool {
-    true
-}
-
-#[cfg(windows)]
-fn set_default_audio_mute(
-    muted: bool,
-    roles: &[i32],
-    only_record_changes: bool,
-) -> windows::core::Result<Vec<i32>> {
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
-        let result = set_default_audio_mute_inner(muted, roles, only_record_changes);
-        CoUninitialize();
-        result
-    }
-}
-
-#[cfg(windows)]
-unsafe fn set_default_audio_mute_inner(
-    muted: bool,
-    roles: &[i32],
-    only_record_changes: bool,
-) -> windows::core::Result<Vec<i32>> {
-    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-    let mut touched = Vec::new();
-
-    for role in roles {
-        let Ok(endpoint_role) = audio_role_from_i32(*role) else {
-            continue;
-        };
-        let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, endpoint_role) else {
-            continue;
-        };
-        let Ok(volume) = device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) else {
-            continue;
-        };
-
-        let was_muted = volume.GetMute()?.as_bool();
-        if was_muted != muted {
-            let event_context = GUID::zeroed();
-            volume.SetMute(muted, &event_context)?;
-            touched.push(*role);
-        } else if !only_record_changes {
-            let event_context = GUID::zeroed();
-            volume.SetMute(muted, &event_context)?;
-        }
-    }
-
-    Ok(touched)
-}
-
-#[cfg(windows)]
-fn audio_role_from_i32(role: i32) -> windows::core::Result<windows::Win32::Media::Audio::ERole> {
-    match role {
-        0 => Ok(eConsole),
-        1 => Ok(eMultimedia),
-        _ => Err(windows::core::Error::from_win32()),
-    }
-}
-
-fn toggle_volume_mute_vk() {
-    let script = r#"
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public class DeskoyK {
-  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr ex);
-  public static void MuteKey() {
-    keybd_event((byte)0xAD, 0, 0, UIntPtr.Zero);
-    keybd_event((byte)0xAD, 0, 2, UIntPtr.Zero);
-  }
-}
-'@
-[DeskoyK]::MuteKey()
-"#;
-    let _ = run_pwsh_encoded(script.into());
-}
-
-fn rate_limit_key(kind: &str) -> String {
-    format!("rateLimit.{kind}.lastSentAt")
-}
-
-fn can_send_after_cooldown(app: &AppHandle, kind: &str) -> bool {
-    let state = app_state(app);
-    let store = load_store(&state.settings_path);
-    let last = store
-        .get(rate_limit_key(kind))
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u128;
-    now_ms().saturating_sub(last) >= FEEDBACK_BUG_COOLDOWN_MS
-}
-
-fn mark_sent_rate_limit(app: &AppHandle, kind: &str) {
-    let state = app_state(app);
-    let mut store = load_store(&state.settings_path);
-    store[rate_limit_key(kind)] = json!(now_ms());
-    save_store(&state.settings_path, &store);
-}
-
-async fn post_relay(url: &str, body: Value) -> Result<(), String> {
-    let resp = reqwest::Client::new()
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "DeskoyDesktop/1 (Tauri)")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("relay_http_{}", resp.status().as_u16()))
     }
 }
 
@@ -2503,12 +1706,32 @@ async fn get_protection_logs(app: AppHandle) -> Vec<ProtectionLogEntry> {
 
 #[tauri::command]
 async fn clear_protection_logs(app: AppHandle) -> Value {
-    clear_protection_logs_from_store(&app);
-    json!({ "ok": true })
+    match clear_protection_logs_from_store(&app) {
+        Ok(()) => json!({ "ok": true }),
+        Err(err) => {
+            report_runtime_error(&app, "settings", err);
+            json!({ "ok": false, "error": "settings_write_failed" })
+        }
+    }
 }
 
 #[tauri::command]
-async fn save_settings(app: AppHandle, patch: Value) -> Value {
+async fn save_settings(app: AppHandle, window: tauri::WebviewWindow, patch: Value) -> Value {
+    if (patch.get("developerMode").is_some()
+        || patch.get("developerModeDisclaimerAccepted").is_some()
+        || patch_touches_pro_feature(&patch))
+        && defender::authorize(&window).is_err()
+    {
+        return json!({ "ok": false, "error": "This setting is available only in Deskoy's main window." });
+    }
+    let enables_pro_feature = patch_enables_pro_feature(&patch);
+    if enables_pro_feature
+        && !app
+            .state::<licensing::LicenseManager>()
+            .has_pro_entitlement()
+    {
+        return json!({ "ok": false, "error": "pro_required" });
+    }
     if patch
         .get("enabled")
         .and_then(Value::as_bool)
@@ -2523,12 +1746,27 @@ async fn save_settings(app: AppHandle, patch: Value) -> Value {
         return json!({ "ok": false, "error": "upgrade_required" });
     }
     let prev = get_settings_from_state(&app);
-    let next = set_settings_in_state(&app, patch);
+    if !developer_mode_change_allowed(&prev, &patch) {
+        return json!({ "ok": false, "error": "Accept the Developer Mode disclaimer first." });
+    }
+    let next = match set_settings_in_state(&app, patch) {
+        Ok(settings) => settings,
+        Err(err) => {
+            report_runtime_error(&app, "settings", err);
+            return json!({ "ok": false, "error": "settings_write_failed" });
+        }
+    };
     if !register_hotkeys(&app, &next) {
-        let _ = set_settings_in_state(&app, serde_json::to_value(prev.clone()).unwrap_or_default());
+        if let Err(err) =
+            set_settings_in_state(&app, serde_json::to_value(prev.clone()).unwrap_or_default())
+        {
+            report_runtime_error(&app, "settings", err);
+            return json!({ "ok": false, "error": "settings_write_failed" });
+        }
         let _ = register_hotkeys(&app, &prev);
         return json!({ "ok": false, "error": "hotkey_unavailable" });
     }
+    defender::developer_mode_changed(&app, next.developer_mode);
     json!({ "ok": true })
 }
 
@@ -2555,10 +1793,23 @@ async fn toggle(app: AppHandle) -> Value {
         rt.paused_until = None;
         rt.paused_until_restart = false;
     }
-    let next = set_settings_in_state(&app, json!({ "enabled": next_enabled }));
+    let next = match set_settings_in_state(&app, json!({ "enabled": next_enabled })) {
+        Ok(settings) => settings,
+        Err(err) => {
+            report_runtime_error(&app, "settings", err);
+            return json!({ "ok": false, "active": prev.enabled, "error": "settings_write_failed" });
+        }
+    };
     if !register_hotkeys(&app, &next) {
         let rolled = set_settings_in_state(&app, json!({ "enabled": false }));
-        let _ = register_hotkeys(&app, &rolled);
+        if let Ok(rolled) = &rolled {
+            let _ = register_hotkeys(&app, rolled);
+        } else if let Err(err) = rolled {
+            report_runtime_error(&app, "settings", err);
+            emit_state(&app);
+            show_main_window(&app);
+            return json!({ "ok": false, "active": effective_enabled(&app), "error": "settings_write_failed" });
+        }
         emit_state(&app);
         show_main_window(&app);
         return json!({ "ok": false, "active": false, "error": "hotkey_unavailable" });
@@ -2569,7 +1820,16 @@ async fn toggle(app: AppHandle) -> Value {
 }
 
 #[tauri::command]
-async fn pick_cover_file(app: AppHandle) -> Value {
+async fn pick_cover_file(app: AppHandle, window: tauri::WebviewWindow) -> Value {
+    if defender::authorize(&window).is_err() {
+        return json!({ "ok": false, "path": "", "error": "This setting is available only in Deskoy's main window." });
+    }
+    if !app
+        .state::<licensing::LicenseManager>()
+        .has_pro_entitlement()
+    {
+        return json!({ "ok": false, "path": "", "error": "pro_required" });
+    }
     let picked = rfd::FileDialog::new()
         .add_filter(
             "Cover files",
@@ -2580,31 +1840,30 @@ async fn pick_cover_file(app: AppHandle) -> Value {
         .pick_file();
     if let Some(path) = picked {
         let path_text = path.to_string_lossy().to_string();
-        let _ = set_settings_in_state(
+        match set_settings_in_state(
             &app,
             json!({ "coverFilePath": path_text, "coverMode": "file" }),
-        );
-        json!({ "ok": true, "path": path.to_string_lossy() })
+        ) {
+            Ok(_) => json!({ "ok": true, "path": path.to_string_lossy() }),
+            Err(err) => {
+                report_runtime_error(&app, "settings", err);
+                json!({ "ok": false, "path": "", "error": "settings_write_failed" })
+            }
+        }
     } else {
         json!({ "ok": true, "path": "" })
     }
 }
 
 fn sanitized_settings(settings: &DeskoySettings) -> Value {
-    let cover_url_host = Url::parse(settings.cover_url.trim())
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string));
-    let cover_file_name = PathBuf::from(settings.cover_file_path.trim())
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string());
     json!({
         "hotkeySet": !settings.hotkey.trim().is_empty(),
         "coverMode": settings.cover_mode,
         "cover": settings.cover,
         "coverDisplay": settings.cover_display,
         "customCoverEnabled": settings.use_custom_cover,
-        "customCoverUrlHost": cover_url_host,
-        "customCoverFileName": cover_file_name,
+        "customCoverUrlSet": !settings.cover_url.trim().is_empty(),
+        "customCoverFileSet": !settings.cover_file_path.trim().is_empty(),
         "audioMute": settings.audio_mute,
         "enabled": settings.enabled,
         "autoCoverBlocked": settings.auto_cover_blocked,
@@ -2655,7 +1914,6 @@ fn diagnostics_payload(app: &AppHandle) -> Value {
             json!({
                 "timestamp": log.timestamp,
                 "processName": log.process_name,
-                "titleLength": log.title.chars().count(),
                 "action": log.action,
             })
         }).collect::<Vec<_>>()
@@ -2684,278 +1942,6 @@ async fn resume_deskoy(app: AppHandle) -> Value {
 }
 
 #[tauri::command]
-async fn send_feedback(app: AppHandle, payload: Value) -> Value {
-    if !can_send_after_cooldown(&app, "feedback") {
-        return json!({ "ok": false, "error": "rate_limited" });
-    }
-    let message = payload
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if message.is_empty() {
-        return json!({ "ok": false, "error": "missing_message" });
-    }
-    let email = payload
-        .get("email")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if !email.is_empty() && !(email.contains('@') && email.contains('.')) {
-        return json!({ "ok": false, "error": "invalid_email" });
-    }
-    let url = std::env::var("DESKOY_FEEDBACK_RELAY_URL")
-        .unwrap_or_else(|_| "https://api.deskoy.com/api/feedback".into());
-    let res = post_relay(
-        &url,
-        json!({
-            "type": "feedback",
-            "message": message,
-            "email": if email.is_empty() { Value::Null } else { json!(email) },
-            "diagnostics": payload.get("diagnostics").cloned().unwrap_or(Value::Null)
-        }),
-    )
-    .await;
-    match res {
-        Ok(()) => {
-            mark_sent_rate_limit(&app, "feedback");
-            json!({ "ok": true })
-        }
-        Err(e) => json!({ "ok": false, "error": e }),
-    }
-}
-
-#[tauri::command]
-async fn send_bug_report(app: AppHandle, payload: Value) -> Value {
-    if !can_send_after_cooldown(&app, "bug") {
-        return json!({ "ok": false, "error": "rate_limited" });
-    }
-    let message = payload
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if message.is_empty() {
-        return json!({ "ok": false, "error": "missing_message" });
-    }
-    let email = payload
-        .get("email")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if !email.is_empty() && !(email.contains('@') && email.contains('.')) {
-        return json!({ "ok": false, "error": "invalid_email" });
-    }
-    let url = std::env::var("DESKOY_BUG_RELAY_URL")
-        .unwrap_or_else(|_| "https://api.deskoy.com/api/bug-report".into());
-    let res = post_relay(
-        &url,
-        json!({
-            "type": "bug",
-            "message": message,
-            "email": if email.is_empty() { Value::Null } else { json!(email) },
-            "steps": payload.get("steps").cloned().unwrap_or(Value::Null),
-            "screenshot": payload.get("screenshot").cloned().unwrap_or(Value::Null),
-            "diagnostics": payload.get("diagnostics").cloned().unwrap_or(Value::Null)
-        }),
-    )
-    .await;
-    match res {
-        Ok(()) => {
-            mark_sent_rate_limit(&app, "bug");
-            json!({ "ok": true })
-        }
-        Err(e) => json!({ "ok": false, "error": e }),
-    }
-}
-
-#[tauri::command]
-async fn get_updates(app: AppHandle) -> Value {
-    {
-        let state = app_state(&app);
-        let rt = state.state.lock().unwrap();
-        if let Some((at, value)) = &rt.updates_cache {
-            if at.elapsed() < UPDATES_CACHE_TTL {
-                return json!({ "ok": true, "data": value });
-            }
-        }
-    }
-    let url = std::env::var("DESKOY_UPDATES_URL")
-        .unwrap_or_else(|_| "https://api.deskoy.com/api/updates".into());
-    let resp = reqwest::Client::new()
-        .get(url)
-        .header("User-Agent", "DeskoyDesktop/1 (Tauri)")
-        .send()
-        .await;
-    match resp {
-        Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
-            Ok(data) if data.is_object() => {
-                app_state(&app).state.lock().unwrap().updates_cache =
-                    Some((Instant::now(), data.clone()));
-                json!({ "ok": true, "data": data })
-            }
-            _ => json!({ "ok": false, "error": "updates_bad_payload" }),
-        },
-        Ok(resp) => {
-            json!({ "ok": false, "error": format!("updates_http_{}", resp.status().as_u16()) })
-        }
-        Err(e) => json!({ "ok": false, "error": e.to_string() }),
-    }
-}
-
-fn updater_public_key() -> Option<String> {
-    std::env::var("DESKOY_UPDATER_PUBKEY")
-        .ok()
-        .or_else(|| option_env!("DESKOY_UPDATER_PUBKEY").map(str::to_string))
-        .or_else(|| Some(DEFAULT_UPDATER_PUBKEY.into()))
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-}
-
-fn updater_endpoint() -> String {
-    std::env::var("DESKOY_UPDATER_URL")
-        .ok()
-        .or_else(|| option_env!("DESKOY_UPDATER_URL").map(str::to_string))
-        .map(|url| url.trim().to_string())
-        .filter(|url| !url.is_empty())
-        .unwrap_or_else(|| DEFAULT_UPDATER_URL.into())
-}
-
-fn updater_builder(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuilder, String> {
-    let Some(pubkey) = updater_public_key() else {
-        return Err("updater_not_configured".into());
-    };
-    let endpoint = Url::parse(&updater_endpoint()).map_err(|_| "updater_bad_endpoint".to_string())?;
-    app.updater_builder()
-        .pubkey(pubkey)
-        .endpoints(vec![endpoint])
-        .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-async fn check_app_update(app: AppHandle) -> Value {
-    {
-        let state = app_state(&app);
-        let rt = state.state.lock().unwrap();
-        if let Some((at, value)) = &rt.app_update_cache {
-            if at.elapsed() < APP_UPDATE_CACHE_TTL {
-                return value.clone();
-            }
-        }
-    }
-
-    let result = match updater_builder(&app).and_then(|builder| {
-        builder
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|err| err.to_string())
-    }) {
-        Ok(updater) => match updater.check().await {
-            Ok(Some(update)) => json!({
-                "ok": true,
-                "configured": true,
-                "available": true,
-                "version": update.version,
-                "currentVersion": update.current_version,
-                "notes": update.body.unwrap_or_default(),
-                "url": update.download_url.as_str()
-            }),
-            Ok(None) => json!({
-                "ok": true,
-                "configured": true,
-                "available": false
-            }),
-            Err(err) => json!({
-                "ok": false,
-                "configured": true,
-                "available": false,
-                "error": err.to_string()
-            }),
-        },
-        Err(error) => json!({
-            "ok": true,
-            "configured": false,
-            "available": false,
-            "error": error
-        }),
-    };
-
-    if result
-        .get("ok")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        app_state(&app).state.lock().unwrap().app_update_cache =
-            Some((Instant::now(), result.clone()));
-    }
-    result
-}
-
-#[tauri::command]
-async fn install_app_update(app: AppHandle) -> Value {
-    let updater = match updater_builder(&app).and_then(|builder| {
-        builder
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|err| err.to_string())
-    }) {
-        Ok(updater) => updater,
-        Err(error) => {
-            return json!({ "ok": false, "error": error });
-        }
-    };
-    let update = match updater.check().await {
-        Ok(Some(update)) => update,
-        Ok(None) => return json!({ "ok": false, "error": "update_unavailable" }),
-        Err(err) => return json!({ "ok": false, "error": err.to_string() }),
-    };
-    close_cover_session(&app).await;
-    let _ = app.emit(
-        "deskoy:updateProgress",
-        json!({ "event": "started", "downloaded": 0 }),
-    );
-    let downloaded = Arc::new(Mutex::new(0_u64));
-    let app_progress = app.clone();
-    let downloaded_progress = downloaded.clone();
-    let result = update
-        .download_and_install(
-            move |chunk_length, content_length| {
-                let mut total = downloaded_progress.lock().unwrap();
-                *total += chunk_length as u64;
-                let _ = app_progress.emit(
-                    "deskoy:updateProgress",
-                    json!({
-                        "event": "progress",
-                        "downloaded": *total,
-                        "total": content_length
-                    }),
-                );
-            },
-            {
-                let app = app.clone();
-                move || {
-                    let _ = app.emit("deskoy:updateProgress", json!({ "event": "finished" }));
-                }
-            },
-        )
-        .await;
-    match result {
-        Ok(()) => {
-            let _ = app.emit("deskoy:updateProgress", json!({ "event": "installed" }));
-            json!({ "ok": true })
-        }
-        Err(err) => {
-            let error = err.to_string();
-            let _ = app.emit(
-                "deskoy:updateProgress",
-                json!({ "event": "error", "error": error }),
-            );
-            json!({ "ok": false, "error": error })
-        }
-    }
-}
-
-#[tauri::command]
 async fn window_minimize(app: AppHandle) -> Value {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.minimize();
@@ -2979,103 +1965,241 @@ async fn close_cover(app: AppHandle) -> Value {
     json!({ "ok": true })
 }
 
-fn send_upgrade_required_if_any(app: &AppHandle) {
-    if let Some(block) = app_state(app).state.lock().unwrap().upgrade_block.clone() {
-        let _ = app.emit("deskoy:upgradeRequired", block);
-    }
-}
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-fn start_version_policy_watcher(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            check_version_policy_fail_open(&app).await;
-            tokio::time::sleep(VERSION_POLICY_POLL).await;
+    static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn test_store_path(label: &str) -> PathBuf {
+        let id = TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "deskoy-{label}-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory.join("settings.json")
+    }
+
+    fn remove_test_store(path: &Path) {
+        if let Some(directory) = path.parent() {
+            let _ = fs::remove_dir_all(directory);
         }
-    });
-}
+    }
 
-async fn check_version_policy_fail_open(app: &AppHandle) {
-    if app_state(app).state.lock().unwrap().upgrade_block.is_some() {
-        return;
+    #[test]
+    fn activation_hotkeys_allow_the_legacy_single_key_bindings() {
+        assert!(parse_hotkey("A").is_some());
+        assert!(parse_hotkey("7").is_some());
+        assert!(parse_hotkey("Escape").is_some());
+        assert!(parse_hotkey("Ctrl+A").is_some());
+        assert!(parse_hotkey("Alt+7").is_some());
+        assert!(parse_hotkey("Shift+Escape").is_some());
+        assert!(parse_hotkey("F8").is_some());
     }
-    let url = std::env::var("DESKOY_VERSION_POLICY_URL")
-        .unwrap_or_else(|_| "https://api.deskoy.com/api/version-policy".into());
-    let Ok(resp) = reqwest::Client::new()
-        .get(url)
-        .header("User-Agent", "DeskoyDesktop/1 (Tauri)")
-        .send()
-        .await
-    else {
-        return;
-    };
-    if !resp.status().is_success() {
-        return;
-    }
-    let Ok(data) = resp.json::<Value>().await else {
-        return;
-    };
-    if data.get("ok").and_then(Value::as_bool) != Some(true) {
-        return;
-    }
-    let version = app.package_info().version.to_string();
-    let blocked = data
-        .get("blockedVersions")
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some(&version)))
-        .unwrap_or(false);
-    let min = data
-        .get("minimumVersion")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let below_min = min
-        .as_ref()
-        .map(|m| is_version_less_than(&version, m))
-        .unwrap_or(false);
-    if !blocked && !below_min {
-        return;
-    }
-    let block = UpgradeBlock {
-        message: data
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or(
-                "This version is discontinued. Please install the latest Deskoy to keep using it.",
-            )
-            .trim()
-            .to_string(),
-        download_url: data
-            .get("downloadUrl")
-            .and_then(Value::as_str)
-            .unwrap_or("https://www.deskoy.com/download")
-            .trim()
-            .to_string(),
-        minimum_version: min,
-    };
-    app_state(app).state.lock().unwrap().upgrade_block = Some(block.clone());
-    if get_settings_from_state(app).enabled {
-        let _ = set_settings_in_state(app, json!({ "enabled": false }));
-        emit_state(app);
-    }
-    show_main_window(app);
-    let _ = app.emit("deskoy:upgradeRequired", block);
-}
 
-fn parse_triplet(v: &str) -> Option<[u32; 3]> {
-    let mut out = [0, 0, 0];
-    for (i, part) in v.trim().split('.').take(3).enumerate() {
-        out[i] = part
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .ok()?;
-    }
-    Some(out)
-}
+    #[test]
+    fn developer_mode_and_disclaimer_defaults_and_persist() {
+        let mut existing_user = serde_json::to_value(DeskoySettings::default()).unwrap();
+        let existing_user_object = existing_user.as_object_mut().unwrap();
+        existing_user_object.remove("developerMode");
+        existing_user_object.remove("developerModeDisclaimerAccepted");
+        let existing_user: DeskoySettings = serde_json::from_value(existing_user).unwrap();
+        assert!(!existing_user.developer_mode);
+        assert!(!existing_user.developer_mode_disclaimer_accepted);
+        assert!(!developer_mode_change_allowed(
+            &existing_user,
+            &json!({ "developerMode": true })
+        ));
+        assert!(developer_mode_change_allowed(
+            &existing_user,
+            &json!({
+                "developerMode": true,
+                "developerModeDisclaimerAccepted": true
+            })
+        ));
 
-fn is_version_less_than(a: &str, b: &str) -> bool {
-    match (parse_triplet(a), parse_triplet(b)) {
-        (Some(av), Some(bv)) => av < bv,
-        _ => false,
+        let mut enabled = existing_user;
+        enabled.developer_mode = true;
+        enabled.developer_mode_disclaimer_accepted = true;
+        let restored: DeskoySettings =
+            serde_json::from_value(serde_json::to_value(enabled).unwrap()).unwrap();
+        assert!(restored.developer_mode);
+        assert!(restored.developer_mode_disclaimer_accepted);
+        assert!(developer_mode_change_allowed(
+            &restored,
+            &json!({ "developerMode": true })
+        ));
     }
+
+    #[test]
+    fn pro_settings_include_custom_cover_and_profile_values() {
+        assert!(patch_enables_pro_feature(
+            &json!({ "useCustomCover": true })
+        ));
+        assert!(patch_enables_pro_feature(&json!({ "coverMode": "url" })));
+        assert!(patch_enables_pro_feature(&json!({ "coverMode": "vscode" })));
+        assert!(patch_enables_pro_feature(&json!({ "cover": "black" })));
+        assert!(patch_enables_pro_feature(
+            &json!({ "coverDisplay": "monitor:1" })
+        ));
+        assert!(patch_enables_pro_feature(&json!({
+            "profiles": [{ "settings": { "useCustomCover": true } }]
+        })));
+        assert!(patch_touches_pro_feature(
+            &json!({ "useCustomCover": false })
+        ));
+        assert!(patch_touches_pro_feature(&json!({ "coverDisplay": "all" })));
+        assert!(!patch_enables_pro_feature(&json!({
+            "coverMode": "docs",
+            "cover": "jira",
+            "coverDisplay": "all",
+            "useCustomCover": false
+        })));
+    }
+
+    #[test]
+    fn free_entitlement_replaces_pro_only_covers() {
+        let mut settings = DeskoySettings {
+            cover_mode: "vscode".into(),
+            cover: "black".into(),
+            ..DeskoySettings::default()
+        };
+
+        apply_free_cover_entitlement(&mut settings);
+
+        assert_eq!(settings.cover_mode, "excel");
+        assert_eq!(settings.cover, "excel");
+    }
+
+    #[test]
+    fn legacy_implicit_auto_hide_rules_are_removed_without_touching_custom_rules() {
+        let mut settings = DeskoySettings::default();
+        settings.blocked_apps = vec!["Discord".into(), "My Private App".into()];
+        settings.profiles.push(DeskoyProfile {
+            id: "work".into(),
+            name: "Work".into(),
+            settings: DeskoyProfileSettings {
+                blocked_apps: vec!["Outlook".into(), "Accounting Tool".into()],
+                ..DeskoyProfileSettings::default()
+            },
+        });
+
+        assert!(remove_legacy_seeded_auto_hide_rules(&mut settings));
+        assert_eq!(settings.blocked_apps, vec!["My Private App"]);
+        assert_eq!(
+            settings.profiles[0].settings.blocked_apps,
+            vec!["Accounting Tool"]
+        );
+    }
+
+    #[test]
+    fn loading_existing_settings_migrates_implicit_auto_hide_rules_once() {
+        let path = test_store_path("auto-hide-migration");
+        let mut settings = DeskoySettings::default();
+        settings.blocked_apps = vec!["Discord".into(), "Custom App".into()];
+        save_store(&path, &json!({ "settings": settings })).unwrap();
+
+        let loaded = load_settings_from_path(&path);
+        let stored = load_store(&path).unwrap();
+
+        assert_eq!(loaded.blocked_apps, vec!["Custom App"]);
+        assert_eq!(
+            stored[AUTO_HIDE_EXPLICIT_RULES_MIGRATION_KEY],
+            Value::Bool(true)
+        );
+        assert_eq!(stored["settings"]["blockedApps"], json!(["Custom App"]));
+        remove_test_store(&path);
+    }
+
+    #[test]
+    fn atomic_store_write_replaces_with_valid_json() {
+        let path = test_store_path("atomic-replace");
+        save_store(&path, &json!({ "settings": { "enabled": false } })).unwrap();
+        save_store(&path, &json!({ "settings": { "enabled": true } })).unwrap();
+
+        let store = load_store(&path).unwrap();
+        assert_eq!(store["settings"]["enabled"], json!(true));
+        assert!(!temporary_store_path(&path).exists());
+        remove_test_store(&path);
+    }
+
+    #[test]
+    fn failed_store_write_is_reported() {
+        let path = test_store_path("write-error");
+        fs::create_dir(&path).unwrap();
+
+        assert!(save_store(&path, &json!({ "settings": {} })).is_err());
+        remove_test_store(&path);
+    }
+
+    #[test]
+    fn corrupt_store_is_not_overwritten_by_an_update() {
+        let path = test_store_path("preserve-corrupt");
+        fs::write(&path, "not json").unwrap();
+        let lock = Mutex::new(());
+
+        let result = update_store_at_path(&path, &lock, |store| {
+            store["settings"] = json!({ "enabled": true });
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+        remove_test_store(&path);
+    }
+
+    #[test]
+    fn concurrent_store_updates_preserve_every_change() {
+        let path = Arc::new(test_store_path("concurrent"));
+        let lock = Arc::new(Mutex::new(()));
+        let mut workers = Vec::new();
+        for index in 0..12 {
+            let path = path.clone();
+            let lock = lock.clone();
+            workers.push(thread::spawn(move || {
+                update_store_at_path(&path, &lock, |store| {
+                    store
+                        .as_object_mut()
+                        .unwrap()
+                        .insert(format!("item-{index}"), json!(index));
+                    Ok(())
+                })
+                .unwrap();
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let store = load_store(&path).unwrap();
+        for index in 0..12 {
+            assert_eq!(store[format!("item-{index}")], json!(index));
+        }
+        remove_test_store(&path);
+    }
+
+    #[test]
+    fn stored_window_titles_are_redacted_but_cover_labels_remain() {
+        let mut logs = vec![
+            ProtectionLogEntry {
+                timestamp: 1,
+                process_name: "Excel".into(),
+                title: "C:\\Users\\Someone\\private.xlsx - Excel".into(),
+                action: "Covered and hidden".into(),
+            },
+            ProtectionLogEntry {
+                timestamp: 2,
+                process_name: "Deskoy".into(),
+                title: "Excel Spreadsheet cover".into(),
+                action: "Cover activated".into(),
+            },
+        ];
+
+        assert!(redact_log_titles(&mut logs));
+        assert_eq!(logs[0].title, REDACTED_WINDOW_TITLE);
+        assert_eq!(logs[1].title, "Excel Spreadsheet cover");
+    }
+
 }

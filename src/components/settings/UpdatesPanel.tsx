@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import deskoyLogoUrl from '../../../assets/logo.png';
+import { updateVersionIsNewer } from '../../shared/version';
 
 type DeskoyUpdatesPayload = {
   ok: true;
@@ -9,6 +11,7 @@ type DeskoyUpdatesPayload = {
   version?: string;
   notes?: string;
   downloadUrl?: string;
+  releaseDate?: string | number;
 };
 
 type NativeUpdatePayload = Awaited<ReturnType<Window['deskoy']['checkAppUpdate']>>;
@@ -21,6 +24,7 @@ type UpdatesState =
       title: string;
       version: string;
       notes: string;
+      releaseDate: string;
       downloadUrl: string;
       installable: boolean;
       installing: boolean;
@@ -30,28 +34,18 @@ type UpdatesState =
 const DESKOY_DOWNLOAD_URL = 'https://www.deskoy.com/download';
 const REFRESH_UPDATES_EVENT = 'deskoy:refreshUpdatesPanel';
 
-function parseVersionParts(version: string): number[] | null {
-  const normalized = version.trim().replace(/^v/i, '').split(/[+-]/, 1)[0];
-  if (!/^\d+(?:\.\d+){0,3}$/.test(normalized)) return null;
-  return normalized.split('.').map((part) => Number(part));
-}
-
-function compareVersions(a: string, b: string): number | null {
-  const aParts = parseVersionParts(a);
-  const bParts = parseVersionParts(b);
-  if (!aParts || !bParts) return null;
-  const length = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < length; i += 1) {
-    const aPart = aParts[i] ?? 0;
-    const bPart = bParts[i] ?? 0;
-    if (aPart !== bPart) return aPart > bPart ? 1 : -1;
-  }
-  return 0;
-}
-
-function updateVersionIsNewer(updateVersion: string, installedVersion: string): boolean {
-  const comparison = compareVersions(updateVersion, installedVersion);
-  return comparison === null || comparison > 0;
+function formatReleaseDate(value: string | number | undefined): string {
+  if (value === undefined || value === '') return 'Not provided';
+  const timestamp = typeof value === 'number' && value < 1_000_000_000_000
+    ? value * 1000
+    : value;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 'Not provided';
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
 }
 
 function nativeUpdateIsAvailable(
@@ -133,6 +127,9 @@ function UpdatesPanel(): ReactElement {
         title: title || 'Deskoy update',
         version: displayVersion || '—',
         notes: displayNotes,
+        releaseDate: formatReleaseDate(
+          nativeAvailable ? native.releaseDate ?? data?.releaseDate : data?.releaseDate,
+        ),
         downloadUrl: downloadUrl || DESKOY_DOWNLOAD_URL,
         installable: nativeAvailable && native.configured,
         installing: false,
@@ -233,12 +230,22 @@ function UpdatesPanel(): ReactElement {
   return (
     <div className="sp-update-card" role="region" aria-label="Latest update announcement">
       <div className="sp-update-hero">
-        <div className="sp-update-hero-top">
-          <div>
-            <div className="sp-update-title">{state.title}</div>
-            <div className="sp-update-sub">Latest update available.</div>
-          </div>
-          <div className="sp-update-badge">{state.version}</div>
+        <div className="sp-update-logo-wrap" aria-hidden="true">
+          <span className="sp-update-logo-glow" />
+          <img className="sp-update-logo" src={deskoyLogoUrl} alt="" />
+        </div>
+        <h3 className="sp-update-title">Deskoy {state.version}</h3>
+        <p className="sp-update-sub">A new Deskoy update is available.</p>
+      </div>
+
+      <div className="sp-update-summary" aria-label="Update summary">
+        <div className="sp-update-summary-row">
+          <span>Version</span>
+          <span className="sp-update-badge">{state.version}</span>
+        </div>
+        <div className="sp-update-summary-row">
+          <span>Release date</span>
+          <span>{state.releaseDate}</span>
         </div>
       </div>
 
@@ -248,7 +255,7 @@ function UpdatesPanel(): ReactElement {
       </div>
 
       <div className="sp-update-footer">
-        <div className="sp-update-hint">{state.installStatus}</div>
+        <div className="sp-update-hint" aria-live="polite">{state.installStatus}</div>
         <button
           type="button"
           className="sp-update-btn"

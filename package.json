@@ -1,7 +1,7 @@
 {
   "name": "deskoy-app",
   "productName": "Deskoy",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "My Electron application description",
   "private": true,
   "scripts": {
@@ -12,11 +12,18 @@
     "start": "tauri dev",
     "build": "vite build",
     "tauri:build": "tauri build",
-    "lint": "tsc --noEmit"
+    "tauri:build:unsigned": "tauri build --no-bundle",
+    "cli:build": "cargo build --manifest-path cli/Cargo.toml",
+    "cli:build:release": "cargo build --manifest-path cli/Cargo.toml --release --locked",
+    "cli:test": "cargo test --manifest-path cli/Cargo.toml",
+    "lint": "tsc --noEmit",
+    "test:defender-ui": "node --test scripts/test-defender-ui.cjs",
+    "test:licensing-ui": "node --test scripts/test-licensing-ui.cjs",
+    "test:local-assets": "node --test scripts/test-local-assets.cjs"
   },
   "keywords": [],
   "author": "User",
-  "license": "LicenseRef-Deskoy-Source-Available-1.0",
+  "license": "GPL-3.0-only",
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.2.14",
@@ -36,6 +43,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "thinking-orbs": "^0.3.1"
   }
 }

@@ -207,6 +207,17 @@
           repeating-linear-gradient(0deg, rgba(212,212,212,.15) 0 2px, transparent 2px 7px);
         opacity:.85;
       }
+      .titlebar{background:#181818;border-bottom:1px solid #2b2b2b;}
+      .command{cursor:text;user-select:text;}
+      .command:focus{outline:1px solid #007acc;background:#252526;}
+      .act,.file,.outline-row{cursor:pointer;}
+      .act{position:relative;border-radius:4px;}
+      .act.active::before{content:"";position:absolute;left:-7px;width:2px;height:24px;background:#007acc;}
+      .file:hover,.outline-row:hover{background:rgba(255,255,255,.045);}
+      .code > div:nth-child(even){min-width:0;white-space:pre;outline:none;user-select:text;}
+      .code > div:nth-child(even):focus{background:rgba(55,148,255,.08);box-shadow:inset 2px 0 #3794ff;}
+      .terminal-input{display:flex;align-items:center;gap:7px;margin-top:4px;}
+      .terminal-command{min-width:120px;outline:none;color:#e5e7eb;user-select:text;}
       @media (max-width: 1100px){
         .root{grid-template-columns: 48px 240px minmax(0, 1fr);}
         .preview{display:none;}
@@ -318,6 +329,41 @@
       const clock = document.getElementById("clock");
       const terminalLine = document.getElementById("terminalLine");
       const sbTime = document.getElementById("sbTime");
+      const command = document.querySelector('.command');
+      command.contentEditable = 'true';
+      command.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          command.blur();
+        }
+      });
+      document.querySelectorAll('.act').forEach((item) => item.addEventListener('click', () => {
+        document.querySelectorAll('.act').forEach((entry) => entry.classList.remove('active'));
+        item.classList.add('active');
+      }));
+      document.querySelectorAll('.file').forEach((file) => file.addEventListener('click', () => {
+        document.querySelectorAll('.file').forEach((entry) => entry.classList.remove('active'));
+        file.classList.add('active');
+        const name = file.textContent.trim();
+        document.querySelector('.title-name').textContent = `${name} — Visual Studio Code`;
+        document.querySelector('.tab').innerHTML = `<span class="dot"></span>${name}`;
+        document.querySelector('.crumbs span[style*="color:#e5e7eb"]').textContent = name;
+      }));
+      document.querySelectorAll('.code > div:nth-child(even)').forEach((line) => {
+        line.contentEditable = 'true';
+        line.spellcheck = false;
+      });
+      const terminalInput = document.createElement('div');
+      terminalInput.className = 'terminal-input';
+      terminalInput.innerHTML = '<span style="color:#22c55e">PS</span><span>C:\\Users\\User\\projects\\deskoy-demo&gt;</span><span class="terminal-command" contenteditable="true" spellcheck="false"></span>';
+      terminalLine.after(terminalInput);
+      terminalInput.querySelector('.terminal-command').addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        const value = event.currentTarget.textContent.trim();
+        if (value) terminalLine.textContent = `> ${value}`;
+        event.currentTarget.textContent = '';
+      });
       function tickClock() {
         clock.textContent = new Date().toLocaleTimeString();
         if (sbTime) {
@@ -337,4 +383,3 @@
     </script>
   </body>
 </html>
-

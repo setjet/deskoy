@@ -236,6 +236,33 @@
       }
       @keyframes pulse { 50% { opacity: .35; } }
 
+      /* Jira-style light workspace */
+      :root {
+        --bg:#f7f8f9;--panel:#fff;--lane:#f1f2f4;--card:#fff;--line:#dfe1e6;
+        --text:#172b4d;--muted:#626f86;--blue:#0c66e4;--green:#22a06b;--amber:#e2b203;
+      }
+      .top,.boardbar{background:#fff;}
+      .sidebar{background:#f7f8f9;}
+      .logo{background:#0c66e4;border-color:#0c66e4;color:#fff;border-radius:5px;}
+      .search{background:#fff;border-color:#8590a2;color:#626f86;cursor:text;user-select:text;}
+      .search:focus{outline:2px solid #0c66e4;outline-offset:-1px;}
+      .nav-item{color:#44546f;cursor:pointer;}
+      .nav-item:hover{background:#e9ebee;}
+      .nav-item.active{background:#e9f2ff;color:#0c66e4;font-weight:600;}
+      .boardbar{box-shadow:0 1px 2px rgba(9,30,66,.05);}
+      .metric,.burndown{background:#fff;box-shadow:0 1px 2px rgba(9,30,66,.08);}
+      .burndown-title,.lane h3{color:#44546f;}
+      .lane{border-color:transparent;}
+      .lane.is-over{background:#deebff;box-shadow:inset 0 0 0 2px #0c66e4;}
+      .ticket{border-color:#dfe1e6;box-shadow:0 1px 2px rgba(9,30,66,.14);cursor:grab;transition:box-shadow .16s ease,transform .16s ease;}
+      .ticket:hover{box-shadow:0 4px 12px rgba(9,30,66,.18);transform:translateY(-1px);}
+      .ticket:active{cursor:grabbing;}
+      .ticket.is-dragging{opacity:.48;transform:scale(.98);}
+      .t-blue{color:#0c66e4;border-color:#b3d4ff;background:#e9f2ff;}
+      .t-green{color:#216e4e;border-color:#baf3db;background:#dcfff1;}
+      .t-amber{color:#974f0c;border-color:#f5cd47;background:#fff7d6;}
+      .avatar{background:#dfe1e6;border-color:#b6c2cf;}
+
       @media (max-width: 1100px) {
         .app { grid-template-columns: 190px minmax(0, 1fr); }
         .board {
@@ -322,11 +349,53 @@
     <script>
       const clock = document.getElementById('clock');
       const review = document.getElementById('reviewCount');
+      const search = document.querySelector('.search');
+      search.contentEditable = 'true';
+      search.addEventListener('focus', () => {
+        if (search.textContent.trim() === 'Search issues, boards, projects') search.textContent = '';
+      });
+      search.addEventListener('input', () => {
+        const query = search.textContent.trim().toLowerCase();
+        document.querySelectorAll('.ticket').forEach((ticket) => {
+          ticket.hidden = Boolean(query) && !ticket.textContent.toLowerCase().includes(query);
+        });
+      });
+      document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', () => {
+        document.querySelectorAll('.nav-item').forEach((entry) => entry.classList.remove('active'));
+        item.classList.add('active');
+      }));
+      let draggedTicket = null;
+      document.querySelectorAll('.ticket').forEach((ticket) => {
+        ticket.draggable = true;
+        ticket.addEventListener('dragstart', () => {
+          draggedTicket = ticket;
+          ticket.classList.add('is-dragging');
+        });
+        ticket.addEventListener('dragend', () => {
+          ticket.classList.remove('is-dragging');
+          document.querySelectorAll('.lane').forEach((lane) => lane.classList.remove('is-over'));
+          draggedTicket = null;
+        });
+      });
+      document.querySelectorAll('.lane').forEach((lane) => {
+        lane.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          lane.classList.add('is-over');
+        });
+        lane.addEventListener('dragleave', () => lane.classList.remove('is-over'));
+        lane.addEventListener('drop', (event) => {
+          event.preventDefault();
+          lane.classList.remove('is-over');
+          if (draggedTicket) lane.append(draggedTicket);
+        });
+      });
       let comments = 2;
-      setInterval(() => {
+      function tickClock() {
         const d = new Date();
         clock.textContent = d.toLocaleTimeString();
-      }, 1000);
+      }
+      tickClock();
+      setInterval(tickClock, 1000);
       setInterval(() => {
         comments = comments === 2 ? 3 : 2;
         review.textContent = `${comments} comments`;
@@ -334,4 +403,3 @@
     </script>
   </body>
 </html>
-
